@@ -31,6 +31,9 @@ final class PanelView: NSView, WKNavigationDelegate {
     private var snapshot: NSImage?
     private let image = NSImageView()
     private let dormant = label("休止中")
+    private let dormantBadge = NSView()
+    private let resumeHint = label("クリックで再開", size: 12)
+    private var previewContent: NSView?
     private let titleLabel = label("ウェブパネル", size: 12)
     private let spinner = NSProgressIndicator()
     private let menuButton: ActionButton
@@ -53,13 +56,22 @@ final class PanelView: NSView, WKNavigationDelegate {
         let icon = label("◈", size: 16); icon.frame = NSRect(x: 14, y: 0, width: 24, height: 28); icon.autoresizingMask = [.minYMargin]; addSubview(icon)
         titleLabel.frame = NSRect(x: 42, y: 0, width: 200, height: 24); titleLabel.autoresizingMask = [.width, .minYMargin]; addSubview(titleLabel)
         menuButton.actionBlock = { [weak self] in self?.showMenu() }; addSubview(menuButton)
-        image.imageScaling = .scaleAxesIndependently; image.alphaValue = 0.45; addSubview(image, positioned: .below, relativeTo: titleLabel)
-        dormant.alignment = .center; addSubview(dormant)
+        image.imageScaling = .scaleAxesIndependently; image.alphaValue = 0.5; addSubview(image, positioned: .below, relativeTo: titleLabel)
+        dormantBadge.wantsLayer = true; dormantBadge.layer?.cornerRadius = 16
+        dormantBadge.layer?.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 0.95).cgColor
+        dormant.alignment = .center; dormant.font = .systemFont(ofSize: 14, weight: .medium)
+        dormantBadge.addSubview(dormant); addSubview(dormantBadge)
+        resumeHint.alignment = .center; resumeHint.textColor = .lightGray; addSubview(resumeHint)
         spinner.style = .spinning; spinner.isDisplayedWhenStopped = false; addSubview(spinner)
         if preview {
-            let placeholder = label("ひと息つくための、小さな窓", size: 20); placeholder.frame = NSRect(x: 30, y: 80, width: 360, height: 40); addSubview(placeholder)
+            let content = NSView(); content.wantsLayer = true
+            content.layer?.backgroundColor = NSColor(calibratedRed: 0.25, green: 0.34, blue: 0.39, alpha: 1).cgColor
+            let placeholder = label("ひと息つくための、小さな窓", size: 20)
+            placeholder.frame = NSRect(x: 20, y: 60, width: 360, height: 40); content.addSubview(placeholder)
+            previewContent = content; addSubview(content, positioned: .below, relativeTo: image)
         }
-        image.isHidden = true; dormant.isHidden = true
+        setDormantAppearance(false)
+        applyVisibility(VisibilityPlan(state: .hidden))
     }
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
@@ -68,34 +80,49 @@ final class PanelView: NSView, WKNavigationDelegate {
         subviews.first?.frame.origin.y = bounds.height-30
         menuButton.frame = NSRect(x: bounds.width-44, y: bounds.height-32, width: 36, height: 28)
         let content = NSRect(x: 7, y: 7, width: max(0, bounds.width-14), height: max(0, bounds.height-43))
-        web?.frame = content; image.frame = content
-        dormant.frame = NSRect(x: 0, y: bounds.midY-12, width: bounds.width, height: 24)
-        spinner.frame = NSRect(x: bounds.midX-12, y: bounds.midY-40, width: 24, height: 24)
+        web?.frame = content; image.frame = content; previewContent?.frame = content
+        dormantBadge.frame = NSRect(x: content.midX-50, y: content.midY+4, width: 100, height: 32)
+        dormant.frame = NSRect(x: 10, y: 5, width: 80, height: 22)
+        resumeHint.frame = NSRect(x: 0, y: content.midY-24, width: bounds.width, height: 20)
+        spinner.frame = NSRect(x: bounds.midX-12, y: content.midY-56, width: 24, height: 24)
+    }
+    func applyVisibility(_ plan: VisibilityPlan) { menuButton.isHidden = !plan.showsPanelMenuButton }
+    private func setDormantAppearance(_ active: Bool) {
+        image.isHidden = !active; dormantBadge.isHidden = !active; resumeHint.isHidden = !active
     }
     func wake() {
         if sleeping, web != nil {
-            epoch += 1; sleeping = false; image.isHidden = true; dormant.isHidden = true
+            epoch += 1; sleeping = false; setDormantAppearance(false)
             return
         }
         guard web == nil else { return }
-        epoch += 1; sleeping = false; image.isHidden = true; dormant.isHidden = true
+        epoch += 1; sleeping = false; setDormantAppearance(false)
         spinner.startAnimation(nil)
         let view = WKWebView(frame: .zero); web = view; view.navigationDelegate = self
         addSubview(view, positioned: .below, relativeTo: titleLabel); needsLayout = true
         view.load(URLRequest(url: url))
     }
     func sleep() {
-        guard let view = web, !sleeping else { return }
+        guard !sleeping else { return }
+        guard let view = web else { setDormantAppearance(true); return }
         sleeping = true; epoch += 1; let token = epoch
         view.takeSnapshot(with: nil) { [weak self, weak view] picture, _ in
             guard let self, self.epoch == token, self.sleeping else { return }
-            self.snapshot = picture; self.image.image = picture; self.image.isHidden = false; self.dormant.isHidden = false
+            self.snapshot = picture; self.image.image = picture; self.setDormantAppearance(true)
             view?.stopLoading(); view?.navigationDelegate = nil; view?.removeFromSuperview(); self.web = nil
             self.spinner.stopAnimation(nil)
             self.didSleep?()
         }
     }
-    func previewDormant() { image.isHidden = false; dormant.isHidden = false }
+    func previewDormant() {
+        layoutSubtreeIfNeeded()
+        if let content = previewContent, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            let picture = NSImage(size: content.bounds.size); picture.addRepresentation(bitmap)
+            snapshot = picture; image.image = picture; content.isHidden = true
+        }
+        setDormantAppearance(true)
+    }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         titleLabel.stringValue = webView.title ?? "ウェブパネル"; spinner.stopAnimation(nil)
         if let current = webView.url, ["http", "https"].contains(current.scheme ?? "") { url = current; navigated?(current) }
@@ -148,6 +175,8 @@ final class OverlayController {
     private var addButton: ActionButton!
     var state: OverlayState = .hidden
     var onDismiss: (() -> Void)?
+    var isSettingsKey: (() -> Bool)?
+    private var visibilityRevision = 0
     private var monitor: Any?
     init(store: SettingsStore) {
         self.store = store; records = Array(store.panels.prefix(PanelPool.maximum))
@@ -173,25 +202,38 @@ final class OverlayController {
     }
     func show(_ next: OverlayState) {
         let wasHidden = state == .hidden; state = next
-        panel.ignoresMouseEvents = next.ignoresMouse
+        visibilityRevision += 1
+        let revision = visibilityRevision
+        let plan = VisibilityPlan(state: next)
+        panel.ignoresMouseEvents = plan.ignoresMouseEvents
+        for view in views.values { view.applyVisibility(plan) }
+        layoutChrome()
         if next == .hidden {
-            NSAnimationContext.runAnimationGroup { $0.duration = 0.15; self.panel.animator().alphaValue = 0 }; return
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = plan.fadeDuration; self.panel.animator().alphaValue = plan.alpha
+            }, completionHandler: { [weak self] in
+                guard let self, self.visibilityRevision == revision, self.state == .hidden,
+                      self.panel.isKeyWindow, !(self.isSettingsKey?() ?? false) else { return }
+                NSApp.deactivate()
+            })
+            return
         }
         if wasHidden, let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
             panel.setFrame(screen.frame, display: false); root.frame.size = screen.frame.size
             for record in records { views[record.id]?.frame = record.placement.restore(screen: screen.frame.size) }
         }
-        layoutChrome(); panel.alphaValue = 1; panel.orderFrontRegardless()
-        if next.needsKey { panel.makeKey() }
+        layoutChrome(); panel.alphaValue = plan.alpha; panel.orderFrontRegardless()
+        if plan.makeKey { panel.makeKey() }
     }
     func layoutChrome() {
-        pill.frame = NSRect(x: root.bounds.midX-40, y: root.bounds.height-52, width: 80, height: 28); pill.isHidden = state != .pinned
+        pill.frame = NSRect(x: root.bounds.midX-40, y: root.bounds.height-52, width: 80, height: 28); pill.isHidden = !VisibilityPlan(state: state).showPinnedPill
         addButton.title = records.isEmpty ? "最初のパネルを追加" : "＋ パネルを追加"
         addButton.frame = NSRect(x: root.bounds.midX-100, y: records.isEmpty ? root.bounds.midY : 24, width: 200, height: 36)
         addButton.isHidden = state != .pinned && !records.isEmpty
     }
     private func install(_ record: PanelRecord) {
         let view = PanelView(record: record); views[record.id] = view; root.addSubview(view)
+        view.applyVisibility(VisibilityPlan(state: state))
         view.frame = record.placement.restore(screen: root.bounds.size)
         view.touched = { [weak self] in self?.touch(record.id) }
         view.changed = { [weak self] in self?.saveFrames() }

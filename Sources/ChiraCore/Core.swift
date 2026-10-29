@@ -2,8 +2,26 @@ import Foundation
 import CoreGraphics
 
 public enum OverlayState: Equatable { case hidden, peek, pinned
-    public var ignoresMouse: Bool { self != .pinned }
-    public var needsKey: Bool { self == .pinned }
+    public var ignoresMouse: Bool { VisibilityPlan(state: self).ignoresMouseEvents }
+    public var needsKey: Bool { VisibilityPlan(state: self).makeKey }
+}
+/// A fresh plan is applied on every show, including repeated pinned shows.
+public struct VisibilityPlan: Equatable {
+    public let alpha: Double
+    public let ignoresMouseEvents: Bool
+    public let makeKey: Bool
+    public let showPinnedPill: Bool
+    public let showsPanelMenuButton: Bool
+    public let usesOrderOut = false
+    public let fadeDuration: TimeInterval
+    public init(state: OverlayState) {
+        alpha = state == .hidden ? 0 : 1
+        ignoresMouseEvents = state != .pinned
+        makeKey = state == .pinned
+        showPinnedPill = state == .pinned
+        showsPanelMenuButton = state == .pinned
+        fadeDuration = state == .hidden ? 0.15 : 0
+    }
 }
 public struct HoldTapStateMachine {
     public static let threshold = 0.25
@@ -33,11 +51,52 @@ public enum ModifierSide: String, Codable, CaseIterable {
     public static func pressed(rawFlags: UInt64) -> Set<Self> { Set(allCases.filter { rawFlags & $0.mask != 0 }) }
 }
 public enum InputMethod: String, Codable, CaseIterable { case carbon, flagsPoll, eventTap }
+/// Shared permission copy and display policy for guides, settings and previews.
+public struct GuideContent: Equatable {
+    public static let permissionNoteText = "修飾キーだけで使う場合は、入力監視の許可が必要です。"
+    public static let fallbackNoteText = "未許可時は押すたびに開閉します。"
+    public static let permissionRequestTitle = "入力監視の許可をリクエスト"
+    public static let permissionGrantedText = "入力監視：許可済み"
+    public let showsPermissionNote: Bool
+    public let permissionNote: String?
+    public let permissionBlockText: String?
+    public init(method: InputMethod) {
+        showsPermissionNote = method != .carbon
+        permissionNote = showsPermissionNote ? Self.permissionNoteText : nil
+        permissionBlockText = permissionNote.map { method == .eventTap ? $0 + "\n" + Self.fallbackNoteText : $0 }
+    }
+}
 public struct Shortcut: Codable, Equatable {
     public var keyCode: UInt32
     public var modifiers: UInt32
-    public init(keyCode: UInt32 = 45, modifiers: UInt32 = 0x1000 | 0x0800) { self.keyCode = keyCode; self.modifiers = modifiers }
+    public init(keyCode: UInt32 = 49, modifiers: UInt32 = 0x1000 | 0x0800) { self.keyCode = keyCode; self.modifiers = modifiers }
     public static let testCopy = Shortcut(keyCode: 80, modifiers: 0x1000 | 0x0800 | 0x0100)
+    public var displayString: String {
+        let keys: [UInt32: String] = [49: "Space", 45: "N", 80: "F19"]
+        let flags: [(UInt32, String)] = [(0x1000, "⌃"), (0x0800, "⌥"), (0x0100, "⌘"), (0x0200, "⇧")]
+        let prefix = flags.filter { modifiers & $0.0 != 0 }.map { $0.1 }.joined()
+        return prefix + (keys[keyCode] ?? "キー\(keyCode)")
+    }
+}
+/// Contains only key configuration and system status, never personal content.
+public enum HotkeyRegistrationStatus: Equatable {
+    case success
+    case carbonFailure(shortcut: Shortcut, status: Int32)
+    case modifierUnavailable(side: ModifierSide)
+    public init(carbonStatus: Int32, shortcut: Shortcut) {
+        self = carbonStatus == 0 ? .success : .carbonFailure(shortcut: shortcut, status: carbonStatus)
+    }
+    public var message: String? {
+        switch self {
+        case .success: return nil
+        case .carbonFailure(let shortcut, _):
+            return "ショートカット \(shortcut.displayString) を登録できませんでした（他のアプリと重複している可能性があります）。上の欄で別のキーを押してください。"
+        case .modifierUnavailable(let side):
+            let names = ["左 Command", "右 Command", "左 Option", "右 Option", "左 Control", "右 Control", "左 Shift", "右 Shift"]
+            let name = names[ModifierSide.allCases.firstIndex(of: side)!]
+            return "修飾キー \(name) のイベント監視を開始・継続できません。状態のポーリングで押すたびに開閉します。入力監視の許可を確認するか、上の欄で別のキーを押してください。"
+        }
+    }
 }
 /// Fractions of the full NSScreen.frame, using bottom-left screen-local coordinates.
 public struct FractionalFrame: Codable, Equatable {
@@ -100,16 +159,30 @@ public struct PanelPool {
         for i in entries.indices { entries[i].live = liveIDs.contains(entries[i].id) }
     }
 }
+public protocol SettingsStorage: AnyObject {
+    func data(forKey key: String) -> Data?
+    func setData(_ data: Data?, forKey key: String)
+}
+extension UserDefaults: SettingsStorage {
+    public func setData(_ data: Data?, forKey key: String) { set(data, forKey: key) }
+}
+public final class MemorySettingsStorage: SettingsStorage {
+    private var values: [String: Data] = [:]
+    public init() {}
+    public func data(forKey key: String) -> Data? { values[key] }
+    public func setData(_ data: Data?, forKey key: String) { values[key] = data }
+}
 public final class SettingsStore {
-    private let defaults: UserDefaults
-    public init(defaults: UserDefaults) { self.defaults = defaults }
-    private func read<T: Decodable>(_ key: String, fallback: T) -> T { guard let data = defaults.data(forKey: key), let value = try? JSONDecoder().decode(T.self, from: data) else { return fallback }; return value }
-    private func write<T: Encodable>(_ value: T, _ key: String) { defaults.set(try? JSONEncoder().encode(value), forKey: key) }
+    private let storage: SettingsStorage
+    public init(storage: SettingsStorage) { self.storage = storage }
+    public convenience init(defaults: UserDefaults) { self.init(storage: defaults) }
+    private func read<T: Decodable>(_ key: String, fallback: T) -> T { guard let data = storage.data(forKey: key), let value = try? JSONDecoder().decode(T.self, from: data) else { return fallback }; return value }
+    private func write<T: Encodable>(_ value: T, _ key: String) { storage.setData(try? JSONEncoder().encode(value), forKey: key) }
     public var shortcut: Shortcut { get { read("shortcut", fallback: Shortcut()) } set { write(newValue, "shortcut") } }
     public var method: InputMethod { get { read("method", fallback: .carbon) } set { write(newValue, "method") } }
     public var side: ModifierSide { get { read("side", fallback: .rightOption) } set { write(newValue, "side") } }
     public var panels: [PanelRecord] { get { read("panels", fallback: []) } set { write(newValue, "panels") } }
-    public var guided: Bool { get { defaults.bool(forKey: "guided") } set { defaults.set(newValue, forKey: "guided") } }
+    public var guided: Bool { get { read("guided", fallback: false) } set { write(newValue, "guided") } }
     public static func normalize(_ text: String) -> URL? {
         let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty, let url = URL(string: s.contains("://") ? s : "https://"+s), ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { return nil }; return url
@@ -118,12 +191,13 @@ public final class SettingsStore {
 #if DEBUG || TRIAL_DIAGNOSTICS
 public struct Diagnostics {
     public var deltaMS: Double?; public var heldMS: Double = 0; public var release = "none"
-    public var keyCode: UInt16 = 0; public var permission = false
+    public var keyCode: UInt16?; public var permission = false
     public var panels = 0; public var live = 0; public var rss: UInt64 = 0
     public init() {}
     public var text: String {
         let source = ["carbon", "flags poll", "event tap", "none"].contains(release) ? release : "none"
-        return "press→release: \(deltaMS.map { String(format: "%.1f ms", $0) } ?? "—")\nrelease: \(source)\nheld: \(Int(heldMS)) ms\nmodifier keyCode: \(keyCode)\nlisten permission: \(permission)\npanels: \(panels) live: \(live) dormant: \(panels-live)\nprocess RSS: \(rss) bytes"
+        let observed = keyCode.flatMap { code in ModifierSide.from(keyCode: code).map { "\(code) (\($0.rawValue))" } } ?? "none"
+        return "press→release: \(deltaMS.map { String(format: "%.1f ms", $0) } ?? "—")\nrelease: \(source)\nheld: \(Int(heldMS)) ms\nmodifier keyCode: \(observed)\nlisten permission: \(permission)\npanels: \(panels) live: \(live) dormant: \(panels-live)\nprocess RSS: \(rss) bytes"
     }
 }
 #endif
