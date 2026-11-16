@@ -16,8 +16,10 @@ func renderPreviews(directory: URL) throws {
             let guide = FirstRunGuideView(shortcut: store.shortcut, method: store.method)
             guide.frame.origin = NSPoint(x: 590, y: 384); root.addSubview(guide)
         } else if state == "settings" || state == "hotkey-error" {
-            let settings = SettingsController(store: SettingsStore(storage: MemorySettingsStorage()), permissionState: { false })
-            if state == "hotkey-error" { settings.registrationStatus = .carbonFailure(shortcut: Shortcut(), status: -9878) }
+            let store = SettingsStore(storage: MemorySettingsStorage())
+            if state == "hotkey-error" { store.shortcut = .testCopy }
+            let settings = SettingsController(store: store, permissionState: { false })
+            if state == "hotkey-error" { settings.registrationStatus = .carbonFailure(shortcut: .default, status: RegistrationFeedback.alreadyRegisteredStatus) }
             if let content = settings.window.contentView { content.removeFromSuperview(); content.frame.origin = NSPoint(x: 590, y: 180); root.addSubview(content) }
         } else if state == "empty" {
             let button = ActionButton("最初のパネルを追加", action: {}); button.frame = NSRect(x: 790, y: 560, width: 220, height: 40); root.addSubview(button)
@@ -46,4 +48,53 @@ func renderPreviews(directory: URL) throws {
         try data.write(to: directory.appendingPathComponent("overlay-002-\(state).png"))
         host.contentView = nil
     }
+    try renderEntryReviews(directory: directory)
+}
+
+private func renderEntryReviews(directory: URL) throws {
+    for (theme, name) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+        guard let appearance = NSAppearance(named: name) else { throw CocoaError(.fileWriteUnknown) }
+        for state in ["icon", "menu", "hotkey-error", "hotkey-generic-error", "recording", "first-run", "dock"] {
+            var failure: Error?
+            appearance.performAsCurrentDrawingAppearance {
+                do { try renderEntryReview(directory: directory, appearance: appearance, theme: theme, state: state) }
+                catch { failure = error }
+            }
+            if let failure { throw failure }
+        }
+    }
+}
+
+private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: String, state: String) throws {
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 1800, height: 1169))
+    root.appearance = appearance; root.wantsLayer = true; root.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
+    let host = NSWindow(contentRect: root.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    host.appearance = appearance; host.contentView = root; host.isReleasedWhenClosed = false
+    let caption = NSTextField(labelWithString: "TRIAL.2 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
+    caption.textColor = .secondaryLabelColor; caption.frame = NSRect(x: 50, y: 1090, width: 1650, height: 30); root.addSubview(caption)
+    let store = SettingsStore(storage: MemorySettingsStorage())
+    if state == "icon" || state == "menu" {
+        let content = EntryMenuPreviewView(state: EntryState(shortcut: store.shortcut), showMenu: state == "menu")
+        content.frame.origin = NSPoint(x: 570, y: 370); root.addSubview(content)
+    } else if state == "first-run" {
+        let guide = FirstRunGuideView(shortcut: store.shortcut, method: .carbon)
+        guide.frame.origin = NSPoint(x: 590, y: 384); root.addSubview(guide)
+    } else {
+        // Explicit fixture preference: identical review output in trial and normal builds.
+        store.dockVisible = true
+        if state == "hotkey-error" || state == "hotkey-generic-error" { store.shortcut = .testCopy }
+        let settings = SettingsController(store: store, permissionState: { false })
+        if state == "hotkey-error" { settings.registrationStatus = .carbonFailure(shortcut: .default, status: RegistrationFeedback.alreadyRegisteredStatus) }
+        if state == "hotkey-generic-error" { settings.registrationStatus = .carbonFailure(shortcut: .default, status: RegistrationFeedback.internalFailureStatus) }
+        if state == "recording" { settings.beginRecording(installMonitor: false) }
+        if let content = settings.window.contentView { content.removeFromSuperview(); content.frame.origin = NSPoint(x: 590, y: 180); root.addSubview(content) }
+        let icon = NSImageView(frame: NSRect(x: 1170, y: 1020, width: 18, height: 18))
+        icon.image = StatusIcon.image(warning: settings.registrationStatus != .success); icon.contentTintColor = .labelColor; root.addSubview(icon)
+    }
+    root.layoutSubtreeIfNeeded()
+    guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { throw CocoaError(.fileWriteUnknown) }
+    root.cacheDisplay(in: root.bounds, to: bitmap)
+    guard let data = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+    try data.write(to: directory.appendingPathComponent("overlay-trial2-\(theme)-\(state).png"))
+    host.contentView = nil
 }

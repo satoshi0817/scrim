@@ -1,6 +1,6 @@
 # overlay-browser-trial
 
-Chira 試用版（診断付き、名前は仮）。修正1〜6は未反映。
+Chira 試用版（診断付き、名前は仮）。引き継ぎの資料は [docs/HANDOFF.md](docs/HANDOFF.md) にあります。
 
 ショートカットを押している間だけ全画面に Web パネルを重ねて表示する macOS アプリの試作です。
 

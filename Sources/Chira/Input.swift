@@ -7,6 +7,7 @@ private let hotkeyCallback: EventHandlerUPP = { _, event, context in
     var id = EventHotKeyID()
     guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &id) == noErr, id.signature == 0x43485241 else { return OSStatus(eventNotHandledErr) }
     let input = Unmanaged<InputController>.fromOpaque(context).takeUnretainedValue()
+    guard id.id == input.currentIdentifier else { return OSStatus(eventNotHandledErr) }
     input.edge(GetEventKind(event) == UInt32(kEventHotKeyPressed), source: .carbon)
     return noErr
 }
@@ -33,8 +34,11 @@ final class InputController {
     private var down = false
     private var method: InputMethod = .carbon
     private var side: ModifierSide = .rightOption
-    private var shortcut = Shortcut()
+    private var shortcut = Shortcut.default
     private var fallback = false
+    private var activeRegistrationStatus: HotkeyRegistrationStatus = .success
+    private(set) var currentIdentifier: UInt32 = 1
+    private var nextIdentifier: UInt32 = 1
     func configure(_ store: SettingsStore) {
         stop(); method = store.method; side = store.side; shortcut = store.shortcut; fallback = false
         #if DEBUG || TRIAL_DIAGNOSTICS
@@ -45,9 +49,11 @@ final class InputController {
             let status = types.withUnsafeMutableBufferPointer { InstallEventHandler(GetApplicationEventTarget(), hotkeyCallback, $0.count, $0.baseAddress, Unmanaged.passUnretained(self).toOpaque(), &handler) }
             guard status == noErr else {
                 registrationStatus = HotkeyRegistrationStatus(carbonStatus: status, shortcut: shortcut)
+                activeRegistrationStatus = registrationStatus
                 return
             }
-            let registered = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: 0x43485241, id: 1), GetApplicationEventTarget(), 0, &hotkey)
+            nextIdentifier &+= 1; currentIdentifier = nextIdentifier
+            let registered = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: 0x43485241, id: currentIdentifier), GetApplicationEventTarget(), 0, &hotkey)
             registrationStatus = HotkeyRegistrationStatus(carbonStatus: registered, shortcut: shortcut)
         } else if method == .eventTap {
             fallback = !CGPreflightListenEventAccess()
@@ -58,6 +64,7 @@ final class InputController {
                     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
                         owner.fallback = true
                         owner.registrationStatus = .modifierUnavailable(side: owner.side)
+                        owner.activeRegistrationStatus = owner.registrationStatus
                         owner.startPollingIfNeeded()
                         #if DEBUG || TRIAL_DIAGNOSTICS
                         owner.recordSource(.none)
@@ -91,6 +98,42 @@ final class InputController {
             registrationStatus = .success
         }
         startPollingIfNeeded()
+        activeRegistrationStatus = registrationStatus
+    }
+    func restoreActiveRegistrationFeedback() { registrationStatus = activeRegistrationStatus }
+    /// Try the candidate before removing the active binding. Failed attempts do not
+    /// replace the active reference or write preferences.
+    func registerReplacement(_ candidate: Shortcut) -> HotkeyRegistrationStatus {
+        if method == .carbon, hotkey != nil, shortcut == candidate {
+            activeRegistrationStatus = .success; registrationStatus = .success; return .success
+        }
+        if handler == nil {
+            var types = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)), EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
+            let installed = types.withUnsafeMutableBufferPointer { InstallEventHandler(GetApplicationEventTarget(), hotkeyCallback, $0.count, $0.baseAddress, Unmanaged.passUnretained(self).toOpaque(), &handler) }
+            guard installed == noErr else {
+                registrationStatus = HotkeyRegistrationStatus(carbonStatus: installed, shortcut: candidate); return registrationStatus
+            }
+        }
+        nextIdentifier &+= 1
+        var replacement: EventHotKeyRef?
+        let result = RegisterEventHotKey(candidate.keyCode, candidate.modifiers, EventHotKeyID(signature: 0x43485241, id: nextIdentifier), GetApplicationEventTarget(), 0, &replacement)
+        guard result == noErr else {
+            registrationStatus = HotkeyRegistrationStatus(carbonStatus: result, shortcut: candidate); return registrationStatus
+        }
+        if let hotkey {
+            let removed = UnregisterEventHotKey(hotkey)
+            guard removed == noErr else {
+                if let replacement { UnregisterEventHotKey(replacement) }
+                registrationStatus = HotkeyRegistrationStatus(carbonStatus: removed, shortcut: candidate)
+                return registrationStatus
+            }
+        }
+        hotkey = replacement; currentIdentifier = nextIdentifier
+        timer?.invalidate(); timer = nil
+        if let runSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runSource, .commonModes) }; runSource = nil
+        if let tap { CFMachPortInvalidate(tap) }; tap = nil
+        shortcut = candidate; method = .carbon; fallback = false; down = false
+        activeRegistrationStatus = .success; registrationStatus = .success; return .success
     }
     private func startPollingIfNeeded() {
         guard timer == nil, method == .flagsPoll || (method == .eventTap && fallback) else { return }
@@ -128,22 +171,9 @@ final class InputController {
 }
 
 final class ShortcutRecorder: NSTextField {
-    var recorded: ((Shortcut) -> Void)?
-    override var acceptsFirstResponder: Bool { true }
-    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self) }
-    override func keyDown(with event: NSEvent) {
-        let flags = event.modifierFlags
-        guard !flags.intersection([.control, .option, .command]).isEmpty else { return }
-        var modifiers: UInt32 = 0
-        if flags.contains(.control) { modifiers |= UInt32(controlKey) }
-        if flags.contains(.option) { modifiers |= UInt32(optionKey) }
-        if flags.contains(.command) { modifiers |= UInt32(cmdKey) }
-        if flags.contains(.shift) { modifiers |= UInt32(shiftKey) }
-        recorded?(Shortcut(keyCode: UInt32(event.keyCode), modifiers: modifiers))
-    }
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard window?.firstResponder === self else { return false }
-        keyDown(with: event); return true
-    }
-    override func becomeFirstResponder() -> Bool { true }
+    var recording = false
+    override var acceptsFirstResponder: Bool { recording }
+    override func mouseDown(with event: NSEvent) { if recording { window?.makeFirstResponder(self) } }
+    // Key input is consumed by the temporary, window-scoped recording monitor.
+    override func keyDown(with event: NSEvent) {}
 }

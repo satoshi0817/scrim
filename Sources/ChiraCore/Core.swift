@@ -42,6 +42,7 @@ public struct HoldTapStateMachine {
     }
     public mutating func dismiss() { state = .hidden; began = nil }
     public mutating func fallback() { began = nil; state = .pinned }
+    public mutating func pin() { began = nil; closing = false; state = .pinned }
 }
 public enum ModifierSide: String, Codable, CaseIterable {
     case leftCommand, rightCommand, leftOption, rightOption, leftControl, rightControl, leftShift, rightShift
@@ -53,6 +54,9 @@ public enum ModifierSide: String, Codable, CaseIterable {
 public enum InputMethod: String, Codable, CaseIterable { case carbon, flagsPoll, eventTap }
 /// Shared permission copy and display policy for guides, settings and previews.
 public struct GuideContent: Equatable {
+    public static func shortcutSentence(shortcut: Shortcut) -> String {
+        "\(shortcut.displayString) を押している間だけ表示します。"
+    }
     public static let permissionNoteText = "修飾キーだけで使う場合は、入力監視の許可が必要です。"
     public static let fallbackNoteText = "未許可時は押すたびに開閉します。"
     public static let permissionRequestTitle = "入力監視の許可をリクエスト"
@@ -69,10 +73,19 @@ public struct GuideContent: Equatable {
 public struct Shortcut: Codable, Equatable {
     public var keyCode: UInt32
     public var modifiers: UInt32
-    public init(keyCode: UInt32 = 49, modifiers: UInt32 = 0x1000 | 0x0800) { self.keyCode = keyCode; self.modifiers = modifiers }
+    public static let `default` = Shortcut(keyCode: 35, modifiers: 0x1000 | 0x0800)
+    public init() { self = Self.default }
+    public init(keyCode: UInt32, modifiers: UInt32) { self.keyCode = keyCode; self.modifiers = modifiers }
     public static let testCopy = Shortcut(keyCode: 80, modifiers: 0x1000 | 0x0800 | 0x0100)
     public var displayString: String {
-        let keys: [UInt32: String] = [49: "Space", 45: "N", 80: "F19"]
+        // Physical ANSI key names; no event characters or typed text are read.
+        let keys: [UInt32: String] = [0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V", 11: "B",
+            12: "Q", 13: "W", 14: "E", 15: "R", 16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 24: "=",
+            25: "9", 26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "O", 32: "U", 33: "[", 34: "I", 35: "P", 36: "Return",
+            37: "L", 38: "J", 39: "'", 40: "K", 41: ";", 42: "\\", 43: ",", 44: "/", 45: "N", 46: "M", 47: ".", 48: "Tab", 49: "Space", 50: "`", 51: "Delete",
+            64: "F17", 76: "Enter", 79: "F18", 80: "F19", 90: "F20", 96: "F5", 97: "F6", 98: "F7", 99: "F3", 100: "F8", 101: "F9",
+            103: "F11", 105: "F13", 106: "F16", 107: "F14", 109: "F10", 111: "F12", 113: "F15", 115: "Home", 116: "PageUp",
+            117: "ForwardDelete", 118: "F4", 119: "End", 120: "F2", 121: "PageDown", 122: "F1", 123: "←", 124: "→", 125: "↓", 126: "↑"]
         let flags: [(UInt32, String)] = [(0x1000, "⌃"), (0x0800, "⌥"), (0x0100, "⌘"), (0x0200, "⇧")]
         let prefix = flags.filter { modifiers & $0.0 != 0 }.map { $0.1 }.joined()
         return prefix + (keys[keyCode] ?? "キー\(keyCode)")
@@ -89,8 +102,8 @@ public enum HotkeyRegistrationStatus: Equatable {
     public var message: String? {
         switch self {
         case .success: return nil
-        case .carbonFailure(let shortcut, _):
-            return "ショートカット \(shortcut.displayString) を登録できませんでした（他のアプリと重複している可能性があります）。上の欄で別のキーを押してください。"
+        case .carbonFailure:
+            return RegistrationFeedback.message(self)
         case .modifierUnavailable(let side):
             let names = ["左 Command", "右 Command", "左 Option", "右 Option", "左 Control", "右 Control", "左 Shift", "右 Shift"]
             let name = names[ModifierSide.allCases.firstIndex(of: side)!]
@@ -178,11 +191,16 @@ public final class SettingsStore {
     public convenience init(defaults: UserDefaults) { self.init(storage: defaults) }
     private func read<T: Decodable>(_ key: String, fallback: T) -> T { guard let data = storage.data(forKey: key), let value = try? JSONDecoder().decode(T.self, from: data) else { return fallback }; return value }
     private func write<T: Encodable>(_ value: T, _ key: String) { storage.setData(try? JSONEncoder().encode(value), forKey: key) }
-    public var shortcut: Shortcut { get { read("shortcut", fallback: Shortcut()) } set { write(newValue, "shortcut") } }
+    public var shortcut: Shortcut { get { read("shortcut", fallback: Shortcut.default) } set { write(newValue, "shortcut") } }
     public var method: InputMethod { get { read("method", fallback: .carbon) } set { write(newValue, "method") } }
     public var side: ModifierSide { get { read("side", fallback: .rightOption) } set { write(newValue, "side") } }
     public var panels: [PanelRecord] { get { read("panels", fallback: []) } set { write(newValue, "panels") } }
     public var guided: Bool { get { read("guided", fallback: false) } set { write(newValue, "guided") } }
+    public func dockVisible(isTrial: Bool) -> Bool { read("dockVisible", fallback: isTrial) }
+    public var dockVisible: Bool {
+        get { dockVisible(isTrial: ChiraBuild.isTrial) }
+        set { write(newValue, "dockVisible") }
+    }
     public static func normalize(_ text: String) -> URL? {
         let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty, let url = URL(string: s.contains("://") ? s : "https://"+s), ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { return nil }; return url

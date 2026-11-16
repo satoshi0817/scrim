@@ -94,11 +94,53 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SettingsStore.normalize(" example.com ")?.absoluteString, "https://example.com")
         XCTAssertNil(SettingsStore.normalize("file:///tmp/private")); XCTAssertNil(SettingsStore.normalize(""))
     }
-    func testDefaultShortcutIsControlOptionSpace() {
+    func testDefaultShortcutIsControlOptionP() {
         let store = SettingsStore(storage: MemorySettingsStorage())
-        XCTAssertEqual(Shortcut().keyCode, 49)
-        XCTAssertEqual(store.shortcut, Shortcut(keyCode: 49, modifiers: 0x1000 | 0x0800))
-        XCTAssertEqual(store.shortcut.displayString, "⌃⌥Space")
+        XCTAssertEqual(Shortcut(), .default)
+        XCTAssertEqual(store.shortcut, Shortcut(keyCode: 35, modifiers: 0x1000 | 0x0800))
+        XCTAssertEqual(store.shortcut.displayString, "⌃⌥P")
+    }
+    func testPreviouslySavedControlOptionSpaceShortcutIsPreserved() throws {
+        let storage = MemorySettingsStorage()
+        let legacy = Shortcut(keyCode: 49, modifiers: 0x1000 | 0x0800)
+        SettingsStore(storage: storage).shortcut = legacy
+        let savedData = try XCTUnwrap(storage.data(forKey: "shortcut"))
+        let restored = SettingsStore(storage: storage).shortcut
+        XCTAssertEqual(restored, legacy); XCTAssertEqual(restored.displayString, legacy.displayString)
+        XCTAssertTrue(restored.displayString.hasSuffix("Space"))
+        XCTAssertEqual(storage.data(forKey: "shortcut"), savedData)
+    }
+    func testReadingDefaultShortcutDoesNotWriteStorage() {
+        let storage = MemorySettingsStorage()
+        XCTAssertNil(storage.data(forKey: "shortcut"))
+        XCTAssertEqual(SettingsStore(storage: storage).shortcut, .default)
+        XCTAssertEqual(SettingsStore(storage: storage).shortcut, .default)
+        XCTAssertNil(storage.data(forKey: "shortcut"))
+    }
+    func testDefaultShortcutIsRegistrableCombinationAndSuccessHasNoMessage() {
+        // Carbon constants represented as pure values: kVK_ANSI_P, controlKey | optionKey, noErr.
+        let shortcut = Shortcut.default
+        XCTAssertEqual(shortcut.keyCode, 35); XCTAssertEqual(shortcut.modifiers, 0x1000 | 0x0800)
+        XCTAssertNotEqual(shortcut.modifiers, 0); XCTAssertEqual(shortcut.displayString, "⌃⌥P")
+        XCTAssertNil(HotkeyRegistrationStatus(carbonStatus: 0, shortcut: shortcut).message)
+    }
+    func testDefaultUserFacingStringsContainNoSpaceKeyName() {
+        var strings = [Shortcut.default.displayString, GuideContent.shortcutSentence(shortcut: .default),
+                       GuideContent.permissionNoteText, GuideContent.fallbackNoteText,
+                       GuideContent.permissionRequestTitle, GuideContent.permissionGrantedText]
+        strings.append(HotkeyRegistrationStatus(carbonStatus: -9878, shortcut: .default).message ?? "")
+        for method in InputMethod.allCases { strings.append(GuideContent(method: method).permissionBlockText ?? "") }
+        for side in ModifierSide.allCases { strings.append(HotkeyRegistrationStatus.modifierUnavailable(side: side).message ?? "") }
+        #if DEBUG || TRIAL_DIAGNOSTICS
+        strings.append(Diagnostics().text)
+        #endif
+        for string in strings { XCTAssertFalse(string.contains("Space"), string) }
+    }
+    func testShortcutGuideSentenceFollowsConfiguredShortcut() {
+        let store = SettingsStore(storage: MemorySettingsStorage())
+        XCTAssertEqual(GuideContent.shortcutSentence(shortcut: store.shortcut), "⌃⌥P を押している間だけ表示します。")
+        store.shortcut = .testCopy
+        XCTAssertEqual(GuideContent.shortcutSentence(shortcut: store.shortcut), "⌃⌥⌘F19 を押している間だけ表示します。")
     }
     func testRegistrationSuccessHasNoMessage() {
         let status = HotkeyRegistrationStatus(carbonStatus: 0, shortcut: Shortcut())
@@ -110,9 +152,9 @@ final class CoreTests: XCTestCase {
         let message = try XCTUnwrap(status.message)
         XCTAssertTrue(message.contains(shortcut.displayString))
         XCTAssertTrue(message.contains("登録できませんでした"))
-        XCTAssertTrue(message.hasSuffix("上の欄で別のキーを押してください。"))
+        XCTAssertTrue(message.hasSuffix("別のキーを選んでください。"))
         XCTAssertFalse(message.contains("-9878")); XCTAssertFalse(message.contains("コード"))
-        XCTAssertEqual(message, "ショートカット ⌃⌥Space を登録できませんでした（他のアプリと重複している可能性があります）。上の欄で別のキーを押してください。")
+        XCTAssertEqual(message, "ショートカット \(shortcut.displayString) を登録できませんでした。このキーはすでに登録されています。別のキーを選んでください。")
         for privateField in ["https://", "/Users/", "title", "url"] { XCTAssertFalse(message.contains(privateField)) }
     }
     func testRegistrationRecoveryClearsMessage() {
