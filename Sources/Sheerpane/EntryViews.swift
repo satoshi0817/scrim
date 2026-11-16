@@ -4,7 +4,7 @@ import SheerpaneAssets
 
 /// Offscreen review fixture, not a system menu or evidence of real menu-bar visibility.
 final class EntryMenuPreviewView: NSView {
-    init(state: EntryState, showMenu: Bool) {
+    init(state: EntryState, showMenu: Bool, gestureStatus: String? = nil) {
         super.init(frame: NSRect(x: 0, y: 0, width: 660, height: 430))
         wantsLayer = true; layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor; layer?.cornerRadius = 12
         let caption = NSTextField(labelWithString: "プレビュー — 実際のメニューバー表示の証拠ではありません")
@@ -15,7 +15,7 @@ final class EntryMenuPreviewView: NSView {
         let symbol = NSTextField(labelWithString: "Sheerpane · \(StatusIcon.resourceName(warning: state.showsWarning))")
         symbol.frame = NSRect(x: 72, y: 330, width: 550, height: 28); addSubview(symbol)
         guard showMenu else { return }
-        let rows = [state.openTitle, state.menuTitles[1], "────────────", state.menuTitles[2]]
+        let rows = (gestureStatus.map { [$0] } ?? []) + [state.openTitle, state.menuTitles[1], "────────────", state.menuTitles[2]]
         for (index, title) in rows.enumerated() {
             let row = NSTextField(labelWithString: title); row.font = .menuFont(ofSize: 14)
             row.frame = NSRect(x: 30, y: 280-CGFloat(index)*38, width: 600, height: 30); addSubview(row)

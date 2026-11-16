@@ -1,10 +1,50 @@
-# Sheerpane 引き継ぎ（下書き）
+# Sheerpane 引き継ぎ
 
-> TASK-OVERLAY-014: 製品名は Sheerpane、バンドル ID は `com.satoshi0817.Sheerpane`、バージョンは **0.1.0 (3)**。リポジトリ名は `overlay-browser-trial` のままです。
-> 今回は名称と設定移行のみ。下記の trial.3 ジェスチャー計画は別タスクで、今回実装・出荷しません。
-> 現行のアイコン・メニュー・プレビュー仕様とコマンドは [sheerpane.md](sheerpane.md) を参照してください。下記の過去のレビュー記録には、その時点のソース説明も含まれます。
-> この文書は下書きです。PM と Lead が確認するまで、コミット・push はしていません。
-> 「確認済み」と書いたものは、記載した方法で確かめたものだけです。実機での操作確認は、ほとんどがまだです。
+## TASK-OVERLAY-005 / v0.1.0-trial.4（現行ソース・出荷引き継ぎ）
+
+現行製品は **Sheerpane 0.1.0 (4)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=4`、bundle ID は `com.satoshi0817.Sheerpane`。Lead / PM / Designer の GO を受け、trial.4 として出荷する実装です。この作業はバージョンと文書の更新のみで、出荷完了の記録ではありません。supervisor がテスト、通常版・診断版のビルド、commit / push、署名、公証、タグ、非公開 prerelease を実施します。trial.4 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に supervisor が記入します。trial.1 / trial.2 / trial.3 の記録は下記に保持します。trial.3 は名称変更・移行版として出荷済みで、以前「trial.3」と呼んでいたジェスチャー計画は、この trial.4 の確定仕様に置き換わります。
+
+### ⌘ 2回押し peek の確定仕様
+
+- 1回目の押下からリリースまで **≤0.30秒**、そのリリースから2回目の押下まで **≤0.40秒**。どちらも境界を含みます。2回目の key-down で直ちに peek を表示し、最低保持時間は設けません。
+- 2回目のリリースが押下から **<0.25秒**なら pin、**≥0.25秒**なら hide。3つの数値は設定の「詳細」内だけで調整できます。
+- 既定の「どちらの ⌘ でも」は左→右・右→左も成功。「左だけ」「右だけ」は反対側の押下で取り消し。両方の ⌘ の同時保持は常に取り消します。
+- ⌘C、⌘Tab、⌘クリックを含む他キー・クリック、Shift / Option / Control など他修飾キーの出現・変化で取り消します。他修飾キーやマウスボタンが既に押されている場合は開始しません。
+- 2回目を保持中の割り込みは `hideImmediately`：アニメーションなしで直ちに隠し、固定せず、元アプリのフォーカスを奪いません。peek は nonactivating・マウス透過で、`makeKey` / `NSApp.activate` を呼びません。実機では「⌘×2 → 2回目を保持したまま C」も確認します。
+- Carbon の既定 **⌃⌥P** は独立した権限不要のフォールバックとして維持。入力監視なし・tap 作成失敗・無効化時も使用でき、tap を無限に自動再試行しません。
+
+### 入力監視・許可カード
+
+`DoublePressInput` は `.listenOnly` で監視し、イベントをそのまま返します。文字や非修飾キーコードを読まず、他キーは取り消しとして扱います。状態の記録は phase / cancel reason の閉じた値のみで、キー内容を記録・送信しません。カード本文は次のとおりです。
+
+> Sheerpane は、押したキーの内容を記録・送信しません。⌘ を押したタイミングだけを使います。
+
+- 自動表示は初回案内で一度、およびジェスチャーのチェックをオンにした直後（fn から有効な ⌘ ジェスチャーを再選択した場合を含む）だけ。未許可で設定を開いただけでは表示しません。「あとで」後は保存した deferred 状態で以降の自動表示を抑止し、再有効化時も手動の入口を使います。
+- チェックの下に **「許可待ち（⌃⌥P で使用中）」＋「入力監視を許可…」** を表示。許可済みなら行全体を隠します。手動ボタンはカードを開くだけで OS の許可要求はしません。
+- 未要求カードは主ボタン「許可する」と通常ボタン「あとで（⌃⌥P を使う）」。拒否時は「入力監視がオフになっています」と主ボタン「システム設定を開く」。主ボタンは Return の既定動作です。許可の自動検知後は「許可されました」を約2秒表示して閉じます。
+- 入力監視の要求（`CGRequestListenEventAccess`）はカードの **「許可する」だけ**。`AppGesturePermission` の app-identity 検査を通る正規 app プロセスだけが実行可能です。preflight もその app 自身の identity で読み、シェルや helper の継承値を信用しません（実装は正しい bundle ID・.app・launchd 親 PID 1 を検査）。tap 開始には許可済み preflight も必要です。起動・設定を開く・テスト・プレビューから要求しません。
+- 設定を開くボタンは該当ペインを開くだけで、許可やシステム設定を書き換えません。旧 trial.2 の権限ガイドは出荷 UI から到達できません。secure input 中はダイアログを出さず、「パスワード入力中は ⌘ の2回押しが使えません」というメニュー状態だけにします。
+
+### fn / Globe（詳細だけの任意オプション）
+
+`maskSecondaryFn` で検知。fn＋他キーは取り消し、listenOnly のため Fn-D 等のシステム操作を遮りません。fn 選択時はチェック名を「2回押しを使う」とし、recorder の下の Command 左右 picker は表示したまま無効化します。次の注意は fn 選択時かつ「詳細」を開いた場合だけ表示します。
+
+- 🌐キーの設定を「何もしない」にする必要があります。
+- fn とほかのキーを一緒に押したときは、Sheerpane は開きません（Fn-D などのシステムの操作はそのまま使えます）
+- Apple 以外の外付けキーボードでは動かないことがあります。
+- 🌐キーで入力ソースを切り替えている場合は、fn は使えません。
+
+全項目は system regular 12pt、`secondaryLabelColor`、行高20pt・項目間6pt。文中の 🌐 は文字表示形式で描画し、先頭の絵文字マーカーは追加しません。「キーボード設定を開く」は注意文の下に左寄せで置き、クリック時にペインを開くだけです。キーボード・システム設定は書き換えません。
+
+### 検証とプレビューの引き継ぎ
+
+005 の既存検証は **132テスト（元の93＋005の39）**。イベントと保存先は合成値・`MemorySettingsStorage` のみ。今回の版数検証は `testSheerpaneResourceVersionIsZeroOneZeroBuildFour`。出荷前の全テストと通常版・診断版ビルドは supervisor が再実行します。実キー・Input Monitoring・secure input・focus・実シートの確認は offscreen 画像とは別です。
+
+現在のプレビュー名は `sheerpane-trial4-{light,dark}-{state}.png`。state は `icon, menu, settings, hotkey-error, hotkey-generic-error, recording, first-run, dock, gesture-default, gesture-advanced, permission-unasked, permission-denied, permission-granted, menu-permitted, menu-waiting, menu-secure`。旧 `overlay-002-*.png` も維持します。過去レビューの `sheerpane-trial3-*` は当時の画像名として保持します。プレビューは非表示ウィンドウ・メモリ保存で、実 tap / hotkey / 許可要求を作りません。この版数更新での再撮影は不要です。
+
+## 過去の引き継ぎ記録（trial.1 / trial.2 / trial.3）
+
+以下の「現在のソース」「未着手」「未出荷」「計画のみ」は各記録を作成した当時の状態です。現行の版数・005 の操作・許可・出荷状況には、冒頭の trial.4 確定仕様を使ってください。古いジェスチャー暫定案や polling/toggle の説明は現行仕様ではありません。
 
 ## 1. 目的と経緯
 

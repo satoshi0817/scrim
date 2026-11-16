@@ -200,7 +200,7 @@ final class OverlayController {
             return event
         }
     }
-    func show(_ next: OverlayState) {
+    func show(_ next: OverlayState, immediately: Bool = false) {
         let wasHidden = state == .hidden; state = next
         visibilityRevision += 1
         let revision = visibilityRevision
@@ -209,6 +209,7 @@ final class OverlayController {
         for view in views.values { view.applyVisibility(plan) }
         layoutChrome()
         if next == .hidden {
+            if immediately { panel.alphaValue = 0; return }
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = plan.fadeDuration; self.panel.animator().alphaValue = plan.alpha
             }, completionHandler: { [weak self] in

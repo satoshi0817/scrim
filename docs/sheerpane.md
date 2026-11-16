@@ -2,7 +2,57 @@
 
 Independent macOS 14+ SwiftPM executable and Foundation/CoreGraphics logic library. Existing NotchBrowser targets remain separate. All UI text and visual treatment are original to this implementation.
 
-## Sheerpane trial.3 naming review
+## TASK-OVERLAY-005 / v0.1.0-trial.4（現行ソース・出荷引き継ぎ）
+
+現行製品は **Sheerpane 0.1.0 (4)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=4`、bundle ID は `com.satoshi0817.Sheerpane`。Lead / PM / Designer の GO を受け、trial.4 として出荷する実装です。この作業はバージョンと文書の更新のみで、出荷完了の記録ではありません。supervisor がテスト、通常版・診断版のビルド、commit / push、署名、公証、タグ、非公開 prerelease を実施します。trial.4 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に supervisor が記入します。trial.1 / trial.2 / trial.3 の記録は下記に保持します。trial.3 は名称変更・移行版として出荷済みで、以前「trial.3」と呼んでいたジェスチャー計画は、この trial.4 の確定仕様に置き換わります。
+
+### ⌘ 2回押し peek の確定仕様
+
+- 1回目の押下からリリースまで **≤0.30秒**、そのリリースから2回目の押下まで **≤0.40秒**。どちらも境界を含みます。2回目の key-down で直ちに peek を表示し、最低保持時間は設けません。
+- 2回目のリリースが押下から **<0.25秒**なら pin、**≥0.25秒**なら hide。3つの数値は設定の「詳細」内だけで調整できます。
+- 既定の「どちらの ⌘ でも」は左→右・右→左も成功。「左だけ」「右だけ」は反対側の押下で取り消し。両方の ⌘ の同時保持は常に取り消します。
+- ⌘C、⌘Tab、⌘クリックを含む他キー・クリック、Shift / Option / Control など他修飾キーの出現・変化で取り消します。他修飾キーやマウスボタンが既に押されている場合は開始しません。
+- 2回目を保持中の割り込みは `hideImmediately`：アニメーションなしで直ちに隠し、固定せず、元アプリのフォーカスを奪いません。peek は nonactivating・マウス透過で、`makeKey` / `NSApp.activate` を呼びません。実機では「⌘×2 → 2回目を保持したまま C」も確認します。
+- Carbon の既定 **⌃⌥P** は独立した権限不要のフォールバックとして維持。入力監視なし・tap 作成失敗・無効化時も使用でき、tap を無限に自動再試行しません。
+
+### 入力監視・許可カード
+
+`DoublePressInput` は `.listenOnly` で監視し、イベントをそのまま返します。文字や非修飾キーコードを読まず、他キーは取り消しとして扱います。状態の記録は phase / cancel reason の閉じた値のみで、キー内容を記録・送信しません。カード本文は次のとおりです。
+
+> Sheerpane は、押したキーの内容を記録・送信しません。⌘ を押したタイミングだけを使います。
+
+- 自動表示は初回案内で一度、およびジェスチャーのチェックをオンにした直後（fn から有効な ⌘ ジェスチャーを再選択した場合を含む）だけ。未許可で設定を開いただけでは表示しません。「あとで」後は保存した deferred 状態で以降の自動表示を抑止し、再有効化時も手動の入口を使います。
+- チェックの下に **「許可待ち（⌃⌥P で使用中）」＋「入力監視を許可…」** を表示。許可済みなら行全体を隠します。手動ボタンはカードを開くだけで OS の許可要求はしません。
+- 未要求カードは主ボタン「許可する」と通常ボタン「あとで（⌃⌥P を使う）」。拒否時は「入力監視がオフになっています」と主ボタン「システム設定を開く」。主ボタンは Return の既定動作です。許可の自動検知後は「許可されました」を約2秒表示して閉じます。
+- 入力監視の要求（`CGRequestListenEventAccess`）はカードの **「許可する」だけ**。`AppGesturePermission` の app-identity 検査を通る正規 app プロセスだけが実行可能です。preflight もその app 自身の identity で読み、シェルや helper の継承値を信用しません（実装は正しい bundle ID・.app・launchd 親 PID 1 を検査）。tap 開始には許可済み preflight も必要です。起動・設定を開く・テスト・プレビューから要求しません。
+- 設定を開くボタンは該当ペインを開くだけで、許可やシステム設定を書き換えません。旧 trial.2 の権限ガイドは出荷 UI から到達できません。secure input 中はダイアログを出さず、「パスワード入力中は ⌘ の2回押しが使えません」というメニュー状態だけにします。
+
+### fn / Globe（詳細だけの任意オプション）
+
+`maskSecondaryFn` で検知。fn＋他キーは取り消し、listenOnly のため Fn-D 等のシステム操作を遮りません。fn 選択時はチェック名を「2回押しを使う」とし、recorder の下の Command 左右 picker は表示したまま無効化します。次の注意は fn 選択時かつ「詳細」を開いた場合だけ表示します。
+
+- 🌐キーの設定を「何もしない」にする必要があります。
+- fn とほかのキーを一緒に押したときは、Sheerpane は開きません（Fn-D などのシステムの操作はそのまま使えます）
+- Apple 以外の外付けキーボードでは動かないことがあります。
+- 🌐キーで入力ソースを切り替えている場合は、fn は使えません。
+
+全項目は system regular 12pt、`secondaryLabelColor`、行高20pt・項目間6pt。文中の 🌐 は文字表示形式で描画し、先頭の絵文字マーカーは追加しません。「キーボード設定を開く」は注意文の下に左寄せで置き、クリック時にペインを開くだけです。キーボード・システム設定は書き換えません。
+
+### 検証とプレビューの引き継ぎ
+
+005 の既存検証は **132テスト（元の93＋005の39）**。イベントと保存先は合成値・`MemorySettingsStorage` のみ。今回の版数検証は `testSheerpaneResourceVersionIsZeroOneZeroBuildFour`。出荷前の全テストと通常版・診断版ビルドは supervisor が再実行します。実キー・Input Monitoring・secure input・focus・実シートの確認は offscreen 画像とは別です。
+
+現在のプレビュー名は `sheerpane-trial4-{light,dark}-{state}.png`。state は `icon, menu, settings, hotkey-error, hotkey-generic-error, recording, first-run, dock, gesture-default, gesture-advanced, permission-unasked, permission-denied, permission-granted, menu-permitted, menu-waiting, menu-secure`。旧 `overlay-002-*.png` も維持します。過去レビューの `sheerpane-trial3-*` は当時の画像名として保持します。プレビューは非表示ウィンドウ・メモリ保存で、実 tap / hotkey / 許可要求を作りません。この版数更新での再撮影は不要です。
+
+Supervisor preview command (not executed in this version/documentation job):
+
+```sh
+build/Sheerpane.app/Contents/MacOS/Sheerpane --render-previews build/sheerpane-trial4-previews
+```
+
+## Historical: Sheerpane trial.3 naming review
+
+This section records TASK-OVERLAY-014 at that time, including its then-planned release and historical preview filenames. Trial.3 subsequently shipped; trial.4 above is the current source specification.
 
 This review changes product naming and settings migration only. Existing trial.2 entry, shortcut and hidden modifier-only controls remain unchanged. Command tap-then-hold belongs to a separate task and is not implemented here.
 
@@ -72,13 +122,11 @@ build/Sheerpane.app/Contents/MacOS/Sheerpane --render-previews build/sheerpane-p
 
 ## Use
 
-Default shortcut: Control–Option–P (⌃⌥P, Carbon keycode 35), separate from NotchBrowser's Control–Option–N. Previously saved shortcuts remain unchanged. Hold for a view-only overlay; release fades it over 0.15 seconds. A tap shorter than 0.25 seconds pins it; exactly 0.25 seconds is a hold. Pinned panels accept web input. Close with the shortcut, Escape or backdrop click. The window-shaped menu-bar icon opens a menu with Open, Settings and Quit. The explicit Change button starts ordinary combination recording.
-
-Registration failures appear immediately below the recorder with the existing recorder feedback and the Designer warning template. The actionable menu indication opens settings. TRIAL.2 feedback distinguishes the SDK-verified duplicate result from generic failure, hides all numeric codes and internal identifiers, and does not promise complete conflict detection. A launch-time failure still opens settings. Recording failure preserves the saved binding and its existing active registration; retry or cancel remains available. Legacy modifier input settings remain supported, but modifier-only recording remains deferred to a separate task.
+The default gesture in trial.4 is Command double-press, specified above. Carbon Control–Option–P (⌃⌥P, keycode 35) remains the independent permission-free fallback; saved combinations remain unchanged. Carbon press/release hold-tap behavior is unchanged. Registration retry, cancellation and reset retain the existing saved-binding safety. Legacy modifier A/B polling and polling/toggle fallback are no longer shipping input paths; InputController now registers Carbon only. DoublePressInput owns the new listen-only gesture path.
 
 Error-copy verification used the installed header `/Library/Developer/CommandLineTools/SDKs/MacOSX14.5.sdk/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Headers/CarbonEventsCore.h`: `eventHotKeyExistsErr = -9878`, `eventHotKeyInvalidErr = -9879` (commented as currently unused), and `eventInternalErr = -9868`. The installed 15.5 and Xcode SDK headers agree. The duplicate comment includes registration within the current process and exclusive-registration conflicts across processes; it does not identify another app. Therefore the duplicate guidance says 「このキーはすでに登録されています。別のキーを選んでください。」, rather than asserting another app or the system owns it. Generic errors make no collision claim. Numeric status values are used internally for classification only and are not interpolated into settings, menu, recording feedback, guides or fixtures. No numeric registration diagnostics were added. The light/dark `hotkey-error` fixtures inject the verified duplicate value; `hotkey-generic-error` injects the verified internal-error value. No real registration occurs during rendering.
 
-The first launch automatically opens the full settings window and brings it to the front. Reopening the running app through Finder, Launchpad or `open -a Sheerpane` also opens settings, regardless of whether another window is visible. Only settings activation uses NSApp.activate(ignoringOtherApps: true), followed by makeKeyAndOrderFront. The top instruction is built by `GuideContent.shortcutSentence(shortcut:)` from the currently configured shortcut's displayString. `Shortcut.default` is the single default definition; reading the fallback does not write settings, and saved shortcuts take priority. `GuideContent(method:)` in SheerpaneCore owns the permission copy and display policy used by settings, the guide and its previews. The legacy guide model still describes permission blocks for modifier-only methods, but trial.2 settings hide the modifier method dropdown, side picker and permission controls. Its wording is 「修飾キーだけで使う場合は、入力監視の許可が必要です。」. The retained `showGuide()` method has no callers. If invoked by future code with a non-Carbon method, it would construct the legacy permission guide; this is not an entry path in the current app. The legacy handler can select B from A and can request access from B, but all current settings permission affordances are hidden. No permission handler is executed by tests or previews.
+First launch and reopening still bring Settings forward; only first-run guidance can automatically add the permission card, subject to the policy above. Merely opening Settings while unauthorized does not show the card. The current large instruction comes from GestureCopy; Carbon combination recording remains available. The old showGuide() has no shipping callers and is retained for historical fixtures only.
 
 Only the display containing the mouse when opening is used, including its complete screen frame. Placement is stored as fractions of that full `NSScreen.frame`, in bottom-left coordinates local to that display (not visibleFrame, backing pixels or desktop-global coordinates). Frames are restored for the current display size, snapped to an 8-point grid/nearby edges (10-point threshold), minimum 240×160, and clamped to keep 40 points visible. Drag the header and resize using the seven-point edge/corner zones. The header menu is visible only while pinned and reloads, opens the current URL externally, duplicates or deletes. HTTP and HTTPS inputs are accepted; a missing scheme becomes HTTPS.
 
@@ -86,9 +134,9 @@ The panel pool retains the four most recently viewed panels, up to twelve record
 
 ## Input and permission
 
-Carbon registers both press and release and relies exclusively on those events, without polling physical key state or switching to toggle mode. Modifier A polls combined-session device flags every 10 ms only when selected. Modifier B uses a listen-only event tap and distinguishes modifier keycodes. The retained request handler could request input monitoring only if explicitly invoked while B is selected; its settings button is always hidden and `showGuide()` has no callers. Current shipping entry paths expose no request affordance. Other paths only preflight. No Accessibility request is made. Without B permission, presses observed through flags polling toggle the overlay. A disabled or unavailable event tap also falls back to polling/toggle. The 10 ms timer exists only for modifier A or modifier B fallback. Re-selecting a method resets its input session.
+See the trial.4 permission specification above. Carbon registers press and release independently of Input Monitoring. DoublePressInput uses a listen-only tap for flags and cancellation events; it never stores or sends key contents. Host-inherited preflight is not trusted. Only the explicit card Allow action can request permission. Tap failure/disable falls back to Carbon without silent tap retries. Secure input updates menu status only.
 
-Global physical input and Spaces behavior require manual validation on the target machine. No-permission polling behavior can vary by macOS version; if device flags are unavailable, choose the Carbon shortcut. Test permission behavior by launching the app bundle through LaunchServices, since command-line launching may inherit the terminal's permissions. The overlay never calls NSApp.activate; settings alone uses NSApp.activate(ignoringOtherApps: true) before makeKeyAndOrderFront. A pinned overlay calls makeKey each time it appears; peek never calls makeKey. After hiding finishes, if the overlay remains key and settings is not key, NSApp.deactivate returns keyboard focus to the previous application. A revision guard prevents stale fade completions from deactivating a re-shown overlay. VisibilityPlan defines alpha, mouse handling, key acquisition, pinned pill and fade duration; all visibility plans prohibit orderOut.
+The overlay never calls NSApp.activate; settings alone may activate. Peek never calls makeKey. Normal hiding retains the existing guarded fade/focus-return path, while second-hold interruption uses hideImmediately without animation or focus movement. Real input, Spaces and focus still require manual verification.
 
 ## Isolated test copies
 
@@ -98,13 +146,13 @@ Settings storage is injected into `SettingsStore` through `SettingsStorage`. The
 SHEERPANE_DEFAULTS_SUITE="sheerpane-test-$(uuidgen)" SHEERPANE_DEFAULT_SHORTCUT=ctrl-opt-cmd-f19 build/Sheerpane.app/Contents/MacOS/Sheerpane
 ```
 
-No Sheerpane test or preview creates a UserDefaults suite, so the Sheerpane test suite creates no `sheerpane-test-*.plist`. Persistence coverage writes JSON through the storage protocol and reads it through a fresh SettingsStore sharing the same memory storage. Previously created preference files are not deleted by these tests. Settings previews include diagnostics only in DEBUG/TRIAL_DIAGNOSTICS builds. Diagnostics contain only timing, source, observed physical modifier keycode and left/right name, permission boolean, counts and this process's RSS; no URLs, page titles, usernames or paths. The observed modifier comes from flagsChanged keycodes or transitions in polled device bits, never the configured side. Before any observation (including Carbon mode) it reads none. Observation state and formatting are compiled only in diagnostic builds.
+No Sheerpane test or preview creates a UserDefaults suite, so the Sheerpane test suite creates no `sheerpane-test-*.plist`. Persistence coverage writes JSON through the storage protocol and reads it through a fresh SettingsStore sharing the same memory storage. Previously created preference files are not deleted by these tests. Settings previews include diagnostics only in DEBUG/TRIAL_DIAGNOSTICS builds. Diagnostics contain only timing, source, observed physical modifier keycode and left/right name, permission boolean, counts and this process's RSS; no URLs, page titles, usernames or paths. The legacy observed-modifier diagnostic remains none in the Carbon-only InputController; the new gesture adapter does not collect keycodes. Observation state and formatting are compiled only in diagnostic builds.
 
 ## Settings migration
 
 On an ordinary first launch, `SettingsMigration` reads a persistent snapshot of the former provisional bundle domain, copies each missing key verbatim to `com.satoshi0817.Sheerpane`, then sets `sheerpaneSettingsMigrated` on the new side only. Existing destination values, including false and empty data, win. The old domain is never written or deleted. A later launch with the flag reads no old settings. An explicit `SHEERPANE_DEFAULTS_SUITE` override skips migration entirely. Preview rendering exits before opening any defaults suite. The migration storage protocol permits memory-only tests; no test opens either real domain.
 
-The private prerelease is planned only: tag `v0.1.0-trial.3`, zip `Sheerpane-0.1.0-trial.3.zip`. This task does not publish it. The repository name remains `overlay-browser-trial`.
+Historical TASK-OVERLAY-014 plan (trial.3 has since shipped): tag `v0.1.0-trial.3`, zip `Sheerpane-0.1.0-trial.3.zip`. These are not trial.4 artifact identifiers. The repository name remains `overlay-browser-trial`.
 
 ## Supervisor verification
 

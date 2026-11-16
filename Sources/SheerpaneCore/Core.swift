@@ -191,6 +191,9 @@ public final class SettingsStore {
     public convenience init(defaults: UserDefaults) { self.init(storage: defaults) }
     private func read<T: Decodable>(_ key: String, fallback: T) -> T { guard let data = storage.data(forKey: key), let value = try? JSONDecoder().decode(T.self, from: data) else { return fallback }; return value }
     private func write<T: Encodable>(_ value: T, _ key: String) { storage.setData(try? JSONEncoder().encode(value), forKey: key) }
+    public var gesture: GestureSettings { get { read("doublePress", fallback: GestureSettings()) } set { write(newValue, "doublePress") } }
+    public var gesturePermissionDeferred: Bool { get { read("gesturePermissionDeferred", fallback: false) } set { write(newValue, "gesturePermissionDeferred") } }
+    public var gesturePermissionAsked: Bool { get { read("gesturePermissionAsked", fallback: false) } set { write(newValue, "gesturePermissionAsked") } }
     public var shortcut: Shortcut { get { read("shortcut", fallback: Shortcut.default) } set { write(newValue, "shortcut") } }
     public var method: InputMethod { get { read("method", fallback: .carbon) } set { write(newValue, "method") } }
     public var side: ModifierSide { get { read("side", fallback: .rightOption) } set { write(newValue, "side") } }

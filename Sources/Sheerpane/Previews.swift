@@ -16,14 +16,14 @@ func renderPreviews(directory: URL) throws {
             store.method = state == "guide-permission" ? .eventTap : .carbon
             let guide = FirstRunGuideView(shortcut: store.shortcut, method: store.method)
             guide.frame.origin = NSPoint(x: 590, y: 384); root.addSubview(guide)
-            let caption = label("Sheerpane trial.3 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
+            let caption = label("Sheerpane trial.4 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
             caption.frame = NSRect(x: 180, y: 1060, width: 1440, height: 40); root.addSubview(caption)
         } else if state == "settings" || state == "hotkey-error" {
             let store = SettingsStore(storage: MemorySettingsStorage())
             if state == "hotkey-error" { store.shortcut = .testCopy }
             let settings = SettingsController(store: store, permissionState: { false })
             if state == "hotkey-error" { settings.registrationStatus = .carbonFailure(shortcut: .default, status: RegistrationFeedback.alreadyRegisteredStatus) }
-            if let content = settings.window.contentView { content.removeFromSuperview(); content.frame.origin = NSPoint(x: 590, y: 180); root.addSubview(content) }
+            if let content = settings.window.contentView { content.removeFromSuperview(); content.frame.origin = NSPoint(x: 590, y: state == "gesture-advanced" ? 70 : 180); root.addSubview(content) }
         } else if state == "empty" {
             let button = ActionButton("最初のパネルを追加", action: {}); button.frame = NSRect(x: 790, y: 560, width: 220, height: 40); root.addSubview(button)
         } else {
@@ -57,7 +57,7 @@ func renderPreviews(directory: URL) throws {
 private func renderEntryReviews(directory: URL) throws {
     for (theme, name) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
         guard let appearance = NSAppearance(named: name) else { throw CocoaError(.fileWriteUnknown) }
-        for state in ["icon", "menu", "settings", "hotkey-error", "hotkey-generic-error", "recording", "first-run", "dock"] {
+        for state in ["icon", "menu", "settings", "hotkey-error", "hotkey-generic-error", "recording", "first-run", "dock", "gesture-default", "gesture-advanced", "permission-unasked", "permission-denied", "permission-granted", "menu-permitted", "menu-waiting", "menu-secure"] {
             var failure: Error?
             appearance.performAsCurrentDrawingAppearance {
                 do { try renderEntryReview(directory: directory, appearance: appearance, theme: theme, state: state) }
@@ -73,21 +73,30 @@ private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: 
     root.appearance = appearance; root.wantsLayer = true; root.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
     let host = NSWindow(contentRect: root.frame, styleMask: .borderless, backing: .buffered, defer: false)
     host.appearance = appearance; host.contentView = root; host.isReleasedWhenClosed = false
-    let caption = NSTextField(labelWithString: "Sheerpane trial.3 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
+    let caption = NSTextField(labelWithString: "Sheerpane trial.4 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
     caption.textColor = .secondaryLabelColor; caption.frame = NSRect(x: 50, y: 1090, width: 1650, height: 30); root.addSubview(caption)
     let store = SettingsStore(storage: MemorySettingsStorage())
-    if state == "icon" || state == "menu" {
+    if state.hasPrefix("permission-") {
+        let value = GesturePermissionState(rawValue: String(state.dropFirst("permission-".count)))!
+        let card = GesturePermissionPreviewView(state: value); card.frame.origin = NSPoint(x: 610, y: 440); root.addSubview(card)
+    } else if state.hasPrefix("menu-") {
+        let content = EntryMenuPreviewView(state: EntryState(shortcut: store.shortcut), showMenu: true,
+            gestureStatus: GestureCopy.menu(permitted: state == "menu-permitted", secure: state == "menu-secure"))
+        content.frame.origin = NSPoint(x: 570, y: 370); root.addSubview(content)
+    } else if state == "icon" || state == "menu" {
         let content = EntryMenuPreviewView(state: EntryState(shortcut: store.shortcut), showMenu: state == "menu")
         content.frame.origin = NSPoint(x: 570, y: 370); root.addSubview(content)
     } else {
         // Explicit fixture preference: identical review output in trial and normal builds.
         store.dockVisible = true
         if state == "hotkey-error" || state == "hotkey-generic-error" { store.shortcut = .testCopy }
+        if state == "gesture-advanced" { store.gesture.useFn = true }
         let settings = SettingsController(store: store, permissionState: { false })
+        if state == "gesture-advanced" { settings.previewAdvanced() }
         if state == "hotkey-error" { settings.registrationStatus = .carbonFailure(shortcut: .default, status: RegistrationFeedback.alreadyRegisteredStatus) }
         if state == "hotkey-generic-error" { settings.registrationStatus = .carbonFailure(shortcut: .default, status: RegistrationFeedback.internalFailureStatus) }
         if state == "recording" { settings.beginRecording(installMonitor: false) }
-        if let content = settings.window.contentView { content.removeFromSuperview(); content.frame.origin = NSPoint(x: 590, y: 180); root.addSubview(content) }
+        if let content = settings.window.contentView { content.removeFromSuperview(); content.frame.origin = NSPoint(x: 590, y: state == "gesture-advanced" ? 70 : 180); root.addSubview(content) }
         let icon = NSImageView(frame: NSRect(x: 1170, y: 1020, width: 18, height: 18))
         icon.image = StatusIcon.image(warning: settings.registrationStatus != .success); icon.contentTintColor = .labelColor; root.addSubview(icon)
     }
@@ -103,6 +112,6 @@ private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: 
     guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { throw CocoaError(.fileWriteUnknown) }
     root.cacheDisplay(in: root.bounds, to: bitmap)
     guard let data = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
-    try data.write(to: directory.appendingPathComponent("sheerpane-trial3-\(theme)-\(state).png"))
+    try data.write(to: directory.appendingPathComponent("sheerpane-trial4-\(theme)-\(state).png"))
     host.contentView = nil
 }

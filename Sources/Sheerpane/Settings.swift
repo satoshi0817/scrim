@@ -36,6 +36,19 @@ final class SettingsController: NSObject, NSWindowDelegate {
     let store: SettingsStore
     let window: NSWindow
     var changed: (() -> Void)?
+    var gestureChanged: (() -> Void)?
+    var gestureAvailable: (() -> Bool)?
+    private var gestureView: GestureSettingsView!
+    private var permissionWindow: NSWindow?
+    private var permissionTimer: Timer?
+    private var permissionPolicy: GesturePermissionPresentationPolicy
+    private var upperGestureViews: [(NSView, CGFloat)] = []
+    private var gestureExtraHeight: CGFloat { gestureView?.expanded == true ? 180 : 0 }
+    func firstRunGuidance() { autoPresentPermission(.firstRun) }
+    private func autoPresentPermission(_ trigger: GesturePermissionPresentationPolicy.Trigger) {
+        if permissionPolicy.shouldPresent(trigger, granted: permissionState()) { presentGesturePermission() }
+    }
+    func previewAdvanced() { gestureView.expanded = true }
     var registerShortcut: ((Shortcut) -> HotkeyRegistrationStatus)?
     var shortcutCommitted: (() -> Void)?
     var dockChanged: (() -> Void)?
@@ -66,8 +79,9 @@ final class SettingsController: NSObject, NSWindowDelegate {
     private var diagnosticLabel: NSTextField!
     private var timer: Timer?
     #endif
-    init(store: SettingsStore, permissionState: @escaping () -> Bool = { CGPreflightListenEventAccess() }) {
+    init(store: SettingsStore, permissionState: @escaping () -> Bool = { AppGesturePermission().isGranted() }) {
         self.store = store; self.permissionState = permissionState
+        permissionPolicy = GesturePermissionPresentationPolicy(deferred: store.gesturePermissionDeferred)
         recordingSession = ShortcutRecordingSession(savedShortcut: store.shortcut)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 800), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
@@ -100,15 +114,21 @@ final class SettingsController: NSObject, NSWindowDelegate {
         retainedShortcutLabel.frame = NSRect(x: 28, y: 474, width: 560, height: 24)
         retainedShortcutLabel.textColor = .secondaryLabelColor; root.addSubview(retainedShortcutLabel)
         dockButton = NSButton(checkboxWithTitle: "Dock に Sheerpane を表示", target: self, action: #selector(toggleDock))
-        dockButton.frame = NSRect(x: 28, y: 310, width: 420, height: 26); root.addSubview(dockButton)
+        dockButton.frame = NSRect(x: 28, y: 252, width: 420, height: 26); root.addSubview(dockButton)
         #if DEBUG || TRIAL_DIAGNOSTICS
-        text("診断", 262, 18)
-        diagnosticLabel = label("", size: 12); diagnosticLabel.maximumNumberOfLines = 10; diagnosticLabel.frame = NSRect(x: 28, y: 70, width: 560, height: 188); root.addSubview(diagnosticLabel)
+        text("診断", 212, 18)
+        diagnosticLabel = label("", size: 12); diagnosticLabel.maximumNumberOfLines = 10; diagnosticLabel.frame = NSRect(x: 28, y: 70, width: 560, height: 138); root.addSubview(diagnosticLabel)
         diagnosticLabel.textColor = .labelColor
         let copy = ActionButton("テキストをコピー") { [weak self] in let text = self?.diagnosticText?() ?? Diagnostics().text; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }; copy.frame = NSRect(x: 28, y: 28, width: 180, height: 30); root.addSubview(copy)
         timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in guard let self else { return }; self.diagnosticLabel.stringValue = self.diagnosticText?() ?? Diagnostics().text }
         diagnosticLabel.stringValue = Diagnostics().text
         #endif
+        upperGestureViews = root.subviews.filter { $0.frame.minY >= 590 }.map { ($0, $0.frame.minY) }
+        gestureView = GestureSettingsView(store: store); gestureView.frame.origin = NSPoint(x: 28, y: 280); root.addSubview(gestureView)
+        gestureView.changed = { [weak self] in self?.gestureChanged?(); self?.refresh() }
+        gestureView.permissionRequested = { [weak self] in self?.autoPresentPermission(.manual) }
+        gestureView.gestureEnabled = { [weak self] in self?.autoPresentPermission(.gestureEnabled) }
+        gestureView.layoutChanged = { [weak self] in self?.refresh() }
         refresh()
     }
     func refresh() {
@@ -118,7 +138,8 @@ final class SettingsController: NSObject, NSWindowDelegate {
         method.isHidden = !presentation.showsModifierOnlyControls
         side.isHidden = !presentation.showsModifierOnlyControls; modifierHint.isHidden = !presentation.showsModifierOnlyControls
         recorder.stringValue = presentation.recorderFieldText
-        guide.stringValue = EntryState(shortcut: store.shortcut).guideText
+        guide.stringValue = store.gesture.useFn ? "fn を2回押して、2回目を押したまま" : GestureCopy.action
+        guide.font = .systemFont(ofSize: 23)
         dockButton.state = store.dockVisible ? .on : .off
         method.isEnabled = !isRecording; side.isEnabled = !isRecording
         changeButton.title = presentation.changeButtonTitle
@@ -130,6 +151,14 @@ final class SettingsController: NSObject, NSWindowDelegate {
         permission.isEnabled = !isRecording
         note.stringValue = !note.isHidden ? (permissionState() ? GuideContent.permissionGrantedText : content.permissionBlockText ?? "") : ""
         refreshRegistrationAppearance()
+        method.isHidden = true; side.isHidden = true; modifierHint.isHidden = true; permission.isHidden = true; note.isHidden = true
+        gestureView?.isHidden = isRecording || registrationStatus != .success
+        gestureView?.permissionGranted = permissionState()
+        let extra = gestureExtraHeight
+        upperGestureViews.forEach { $0.0.frame.origin.y = $0.1 + extra }
+        registrationLabel.frame.origin.y += extra; retainedShortcutLabel.frame.origin.y += extra
+        settingsContent?.setFrameSize(NSSize(width: 620, height: 800 + extra))
+        window.setContentSize(NSSize(width: 620, height: 800 + extra))
     }
     private func refreshRegistrationAppearance() {
         let presentation = Trial2SettingsPresentation(retainedShortcut: store.shortcut, registration: registrationStatus, isRecording: isRecording)
@@ -213,21 +242,48 @@ final class SettingsController: NSObject, NSWindowDelegate {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }; keyMonitor = nil; recorder?.recording = false
         if window.firstResponder === recorder { window.makeFirstResponder(nil) }
     }
-    func windowWillClose(_ notification: Notification) { cancelRecording() }
+    func windowWillClose(_ notification: Notification) { cancelRecording(); closePermissionCard() }
+    func windowDidBecomeKey(_ notification: Notification) { refresh() }
     func windowDidResignKey(_ notification: Notification) { if isRecording { cancelRecording() } }
-    private func requestModifierPermission() {
-        guard GuideContent(method: store.method).showsPermissionNote else { return }
-        if store.method == .flagsPoll {
-            // A does not request access. Select B first; its explicit button can then request.
-            store.method = .eventTap; refresh(); changed?(); show(); return
+    private func requestModifierPermission() { presentGesturePermission() }
+    func presentGesturePermission() {
+        let initiallyGranted = permissionState()
+        let unavailable = initiallyGranted && gestureAvailable?() == false
+        guard (!initiallyGranted || unavailable), permissionWindow == nil else { return }
+        let card = NSWindow(contentRect: NSRect(x: 0, y: 0, width: GestureSettingsPresentation.permissionCardWidth, height: GestureSettingsPresentation.permissionCardHeight), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        permissionWindow = card; card.isReleasedWhenClosed = false; card.title = "Sheerpane"
+        func render(_ state: GesturePermissionState) {
+            card.contentView = GesturePermissionView(state: state, unavailable: unavailable, allow: { [weak self] in
+                guard let self else { return }; self.store.gesturePermissionAsked = true
+                AppGesturePermission().requestFromAllowButton()
+                render(self.permissionState() ? .granted : .denied)
+            }, later: { [weak self] in
+                guard let self else { return }; self.permissionPolicy.later(); self.store.gesturePermissionDeferred = true; self.closePermissionCard()
+            }, openSettings: {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
+            })
         }
-        guard store.method == .eventTap else { return }
-        _ = CGRequestListenEventAccess(); refresh(); changed?()
+        render(store.gesturePermissionAsked || unavailable ? .denied : .unasked)
+        window.beginSheet(card)
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if !card.isVisible { self.closePermissionCard(); return }
+            if !initiallyGranted && self.permissionState() {
+                self.permissionTimer?.invalidate(); self.permissionTimer = nil
+                render(.granted); self.gestureChanged?(); self.refresh()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.closePermissionCard() }
+            }
+        }
+    }
+    private func closePermissionCard() {
+        permissionTimer?.invalidate(); permissionTimer = nil
+        if let card = permissionWindow { window.endSheet(card); card.close() }; permissionWindow = nil
     }
     func show() {
-        window.title = "Sheerpane 設定"; window.setContentSize(NSSize(width: 620, height: 800))
-        settingsContent?.setFrameSize(NSSize(width: 620, height: 800))
-        window.contentView = settingsContent; refresh(); bringSettingsToFront()
+        window.title = "Sheerpane 設定"; window.setContentSize(NSSize(width: 620, height: 800 + gestureExtraHeight))
+        settingsContent?.setFrameSize(NSSize(width: 620, height: 800 + gestureExtraHeight))
+        window.contentView = settingsContent; refresh(); gestureChanged?(); bringSettingsToFront()
+        // Opening Settings alone never auto-presents the card.
     }
     func showGuide() {
         let content = FirstRunGuideView(shortcut: store.shortcut, method: store.method, requestPermission: { [weak self] in

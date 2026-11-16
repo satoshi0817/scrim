@@ -28,19 +28,16 @@ final class InputController {
     #endif
     private var hotkey: EventHotKeyRef?
     private var handler: EventHandlerRef?
-    private var timer: Timer?
-    private var tap: CFMachPort?
-    private var runSource: CFRunLoopSource?
     private var down = false
     private var method: InputMethod = .carbon
-    private var side: ModifierSide = .rightOption
     private var shortcut = Shortcut.default
     private var fallback = false
     private var activeRegistrationStatus: HotkeyRegistrationStatus = .success
     private(set) var currentIdentifier: UInt32 = 1
     private var nextIdentifier: UInt32 = 1
     func configure(_ store: SettingsStore) {
-        stop(); method = store.method; side = store.side; shortcut = store.shortcut; fallback = false
+        // Legacy modifier methods are no longer a shipping input path.
+        stop(); method = .carbon; shortcut = store.shortcut; fallback = false
         #if DEBUG || TRIAL_DIAGNOSTICS
         observedModifierKeyCode = nil; observedPressed = []; diagnosticSource = "none"
         #endif
@@ -55,49 +52,7 @@ final class InputController {
             nextIdentifier &+= 1; currentIdentifier = nextIdentifier
             let registered = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: 0x43485241, id: currentIdentifier), GetApplicationEventTarget(), 0, &hotkey)
             registrationStatus = HotkeyRegistrationStatus(carbonStatus: registered, shortcut: shortcut)
-        } else if method == .eventTap {
-            fallback = !CGPreflightListenEventAccess()
-            if !fallback {
-                tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: CGEventMask(1 << CGEventType.flagsChanged.rawValue), callback: { _, type, event, context in
-                    guard let context else { return Unmanaged.passUnretained(event) }
-                    let owner = Unmanaged<InputController>.fromOpaque(context).takeUnretainedValue()
-                    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                        owner.fallback = true
-                        owner.registrationStatus = .modifierUnavailable(side: owner.side)
-                        owner.activeRegistrationStatus = owner.registrationStatus
-                        owner.startPollingIfNeeded()
-                        #if DEBUG || TRIAL_DIAGNOSTICS
-                        owner.recordSource(.none)
-                        #endif
-                        if owner.down { owner.onEdge?(false, true) }
-                    } else if type == .flagsChanged {
-                        let code = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-                        #if DEBUG || TRIAL_DIAGNOSTICS
-                        if ModifierSide.from(keyCode: code) != nil { owner.observedModifierKeyCode = code }
-                        #endif
-                        if ModifierSide.from(keyCode: code) == owner.side {
-                            owner.edge(ModifierSide.pressed(rawFlags: event.flags.rawValue).contains(owner.side), source: .eventTap)
-                        }
-                    }
-                    return Unmanaged.passUnretained(event)
-                }, userInfo: Unmanaged.passUnretained(self).toOpaque())
-                if let tap, let source = CFMachPortCreateRunLoopSource(nil, tap, 0) {
-                    runSource = source
-                    CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-                    CGEvent.tapEnable(tap: tap, enable: true)
-                    fallback = !CGEvent.tapIsEnabled(tap: tap)
-                } else { fallback = true }
-                if fallback {
-                    if let runSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runSource, .commonModes) }; runSource = nil
-                    if let tap { CFMachPortInvalidate(tap) }; tap = nil
-                }
-            }
-            registrationStatus = fallback ? .modifierUnavailable(side: side) : .success
-        } else {
-            // Foundation's polling timer has no failable registration API.
-            registrationStatus = .success
         }
-        startPollingIfNeeded()
         activeRegistrationStatus = registrationStatus
     }
     func restoreActiveRegistrationFeedback() { registrationStatus = activeRegistrationStatus }
@@ -129,15 +84,8 @@ final class InputController {
             }
         }
         hotkey = replacement; currentIdentifier = nextIdentifier
-        timer?.invalidate(); timer = nil
-        if let runSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runSource, .commonModes) }; runSource = nil
-        if let tap { CFMachPortInvalidate(tap) }; tap = nil
         shortcut = candidate; method = .carbon; fallback = false; down = false
         activeRegistrationStatus = .success; registrationStatus = .success; return .success
-    }
-    private func startPollingIfNeeded() {
-        guard timer == nil, method == .flagsPoll || (method == .eventTap && fallback) else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { [weak self] _ in self?.poll() }
     }
     func edge(_ next: Bool, source: InputOrigin) {
         // In toggle mode each physical press is independent; releases only reset the latch.
@@ -148,24 +96,10 @@ final class InputController {
         #endif
         onEdge?(next, fallback)
     }
-    private func poll() {
-        guard method == .flagsPoll || (method == .eventTap && fallback) else { return }
-        let pressed = ModifierSide.pressed(rawFlags: CGEventSource.flagsState(.combinedSessionState).rawValue)
-        #if DEBUG || TRIAL_DIAGNOSTICS
-        // Derive the physical side from observed transitions, never from the setting.
-        for observed in ModifierSide.allCases where pressed.contains(observed) != observedPressed.contains(observed) {
-            observedModifierKeyCode = observed.keyCode
-        }
-        observedPressed = pressed
-        #endif
-        edge(pressed.contains(side), source: .flagsPoll)
-    }
     func stop() {
-        timer?.invalidate(); timer = nil
         if let hotkey { UnregisterEventHotKey(hotkey) }; hotkey = nil
         if let handler { RemoveEventHandler(handler) }; handler = nil
-        if let runSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runSource, .commonModes) }; runSource = nil
-        if let tap { CFMachPortInvalidate(tap) }; tap = nil; down = false
+        down = false
     }
     deinit { stop() }
 }
