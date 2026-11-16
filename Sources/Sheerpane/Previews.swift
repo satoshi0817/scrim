@@ -16,7 +16,7 @@ func renderPreviews(directory: URL) throws {
             store.method = state == "guide-permission" ? .eventTap : .carbon
             let guide = FirstRunGuideView(shortcut: store.shortcut, method: store.method)
             guide.frame.origin = NSPoint(x: 590, y: 384); root.addSubview(guide)
-            let caption = label("Sheerpane 0.1.0 (5) · trial.5 準備中 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
+            let caption = label("Sheerpane 0.1.0 (6) · TASK-OVERLAY-008 開発中 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
             caption.frame = NSRect(x: 180, y: 1060, width: 1440, height: 40); root.addSubview(caption)
         } else if state == "settings" || state == "hotkey-error" {
             let store = SettingsStore(storage: MemorySettingsStorage())
@@ -57,7 +57,7 @@ func renderPreviews(directory: URL) throws {
 private func renderEntryReviews(directory: URL) throws {
     for (theme, name) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
         guard let appearance = NSAppearance(named: name) else { throw CocoaError(.fileWriteUnknown) }
-        for state in ["login-off", "login-on", "login-approval", "login-error", "login-unregister-error", "icon", "menu", "settings", "hotkey-error", "hotkey-generic-error", "recording", "first-run", "dock", "gesture-default", "gesture-advanced", "permission-unasked", "permission-denied", "permission-granted", "menu-permitted", "menu-waiting", "menu-secure"] {
+        for state in ["layout-wrap", "layout-stack", "layout-settings", "layout-on", "layout-off", "layout-small-screen", "login-off", "login-on", "login-approval", "login-error", "login-unregister-error", "icon", "menu", "settings", "hotkey-error", "hotkey-generic-error", "recording", "first-run", "dock", "gesture-default", "gesture-advanced", "permission-unasked", "permission-denied", "permission-granted", "menu-permitted", "menu-waiting", "menu-secure"] {
             var failure: Error?
             appearance.performAsCurrentDrawingAppearance {
                 do { try renderEntryReview(directory: directory, appearance: appearance, theme: theme, state: state) }
@@ -73,10 +73,29 @@ private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: 
     root.appearance = appearance; root.wantsLayer = true; root.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
     let host = NSWindow(contentRect: root.frame, styleMask: .borderless, backing: .buffered, defer: false)
     host.appearance = appearance; host.contentView = root; host.isReleasedWhenClosed = false
-    let caption = NSTextField(labelWithString: "Sheerpane 0.1.0 (5) · trial.5 準備中 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
+    let caption = NSTextField(labelWithString: "Sheerpane 0.1.0 (6) · TASK-OVERLAY-008 開発中 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
     caption.textColor = .secondaryLabelColor; caption.frame = NSRect(x: 50, y: 1210, width: 1650, height: 30); root.addSubview(caption)
     let store = SettingsStore(storage: MemorySettingsStorage())
-    if state.hasPrefix("permission-") {
+    store.sameLayoutOnAllDisplays = state != "layout-off"
+    if state == "layout-small-screen" || state == "layout-wrap" || state == "layout-stack" {
+        let reference = CGSize(width: 1800, height: 1100)
+        let small = Backdrop(frame: NSRect(x: 575, y: 280, width: 650, height: state == "layout-stack" ? 400 : 650))
+        root.addSubview(small)
+        store.panels = (0..<(state == "layout-stack" ? 8 : 4)).map { index in
+            PanelRecord(url: URL(string: "https://example.invalid/\(index)")!, placement:
+                FractionalFrame(frame: CGRect(x: 20 + index * 440, y: 360, width: 420, height: 320), screen: reference))
+        }
+        store.sharedLayoutReferenceSize = reference
+        let layout = store.layout(for: "uuid:preview-small", screen: small.bounds.size)
+        let frames = LayoutFitter.frames(layout: layout, screen: small.bounds.size)
+        for (record, frame) in zip(layout.panels, frames) {
+            let view = PanelView(record: record, preview: true)
+            view.frame = frame; view.applyVisibility(VisibilityPlan(state: .pinned))
+            small.addSubview(view); view.needsLayout = true
+        }
+        let dimensions = label(state == "layout-stack" ? "650×400 · 28pt タイトルバーカスケード · 文字は通常サイズ" : "650×650 · フレーム縮小と本文の折り返し · 文字は通常サイズ", size: 16)
+        dimensions.frame = NSRect(x: 450, y: 960, width: 900, height: 30); root.addSubview(dimensions)
+    } else if state.hasPrefix("permission-") {
         let value = GesturePermissionState(rawValue: String(state.dropFirst("permission-".count)))!
         let card = GesturePermissionPreviewView(state: value); card.frame.origin = NSPoint(x: 610, y: 440); root.addSubview(card)
     } else if state.hasPrefix("menu-") {
@@ -117,7 +136,8 @@ private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: 
     guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { throw CocoaError(.fileWriteUnknown) }
     root.cacheDisplay(in: root.bounds, to: bitmap)
     guard let data = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
-    let filename = state.hasPrefix("login-") ? "r11b-\(state)-\(theme).png" : "sheerpane-trial5-\(theme)-\(state).png"
+    let isR12b = ["layout-wrap", "layout-stack", "layout-settings"].contains(state)
+    let filename = isR12b ? "r12b-\(state)-\(theme).png" : state.hasPrefix("layout-") ? "r12-\(state)-\(theme).png" : state.hasPrefix("login-") ? "r11b-\(state)-\(theme).png" : "sheerpane-trial5-\(theme)-\(state).png"
     try data.write(to: directory.appendingPathComponent(filename))
     host.contentView = nil
 }

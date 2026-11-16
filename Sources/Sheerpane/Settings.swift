@@ -59,6 +59,8 @@ final class SettingsController: NSObject, NSWindowDelegate {
     private var changeButton: ActionButton!
     private var defaultButton: ActionButton!
     private var dockButton: NSButton!
+    private var layoutButton: NSButton!
+    private let layoutHelper = label("", size: 12)
     let loginModel: LoginItemSettingsModel
     private var loginButton: NSButton!
     private let loginHelper = label(LoginItemSettingsModel.approvalText, size: 12)
@@ -121,6 +123,11 @@ final class SettingsController: NSObject, NSWindowDelegate {
         retainedShortcutLabel.textColor = .secondaryLabelColor; root.addSubview(retainedShortcutLabel)
         dockButton = NSButton(checkboxWithTitle: "Dock に Sheerpane を表示", target: self, action: #selector(toggleDock))
         dockButton.frame = NSRect(x: 28, y: 252, width: 420, height: 26); root.addSubview(dockButton)
+        layoutButton = NSButton(checkboxWithTitle: DisplayLayoutCopy.checkboxTitle, target: self, action: #selector(toggleLayout))
+        layoutButton.frame = NSRect(x: 28, y: 0, width: 560, height: 26); root.addSubview(layoutButton)
+        layoutHelper.textColor = .secondaryLabelColor
+        layoutHelper.usesSingleLineMode = true
+        root.addSubview(layoutHelper)
         #if DEBUG || TRIAL_DIAGNOSTICS
         text("診断", 212, 18)
         diagnosticLabel = label("", size: 12); diagnosticLabel.maximumNumberOfLines = 10; diagnosticLabel.frame = NSRect(x: 28, y: 70, width: 560, height: 138); root.addSubview(diagnosticLabel)
@@ -158,6 +165,8 @@ final class SettingsController: NSObject, NSWindowDelegate {
         guide.stringValue = store.gesture.useFn ? "fn を2回押して、2回目を押したまま" : GestureCopy.action
         guide.font = .systemFont(ofSize: 23)
         dockButton.state = store.dockVisible ? .on : .off
+        layoutButton.state = store.sameLayoutOnAllDisplays ? .on : .off
+        layoutHelper.stringValue = store.sameLayoutOnAllDisplays ? "どの画面でも同じ並びで表示します。" : "画面ごとに並びを覚えます。並べ替えは、その画面に出したパネルの上で行います。"
         loginButton.state = loginModel.isOn ? .on : .off
         loginHelper.isHidden = !loginModel.showsApproval
         loginSettingsButton.isHidden = !loginModel.showsSettings
@@ -207,17 +216,31 @@ final class SettingsController: NSObject, NSWindowDelegate {
         }
         cursor -= 6 + dockButton.frame.height
         dockButton.frame.origin.y = cursor
+        cursor -= 6 + layoutButton.frame.height
+        layoutButton.frame.origin.y = cursor
+        let helperHeight = ceil(layoutHelper.cell?.cellSize.height ?? 16)
+        cursor -= 4 + helperHeight
+        layoutHelper.frame = NSRect(x: accessoryX, y: cursor, width: accessoryWidth, height: helperHeight)
 
         // Keep the bottom margin and diagnostics intact while extra rows grow downward
         // in window coordinates. Hidden accessories contribute no height or spacing.
-        let growth = 252 - cursor
+        #if DEBUG || TRIAL_DIAGNOSTICS
+        let groupBottom: CGFloat = 212 + 30 + LayoutFitter.diagnosticsGap
+        #else
+        let groupBottom: CGFloat = 252
+        #endif
+        let growth = groupBottom - cursor
         upperGestureViews.forEach { $0.0.frame.origin.y = $0.1 + growth }
-        for view in [gestureView!, loginButton!, loginHelper, loginError, loginSettingsButton!, dockButton!] where !view.isHidden {
+        for view in [gestureView!, loginButton!, loginHelper, loginError, loginSettingsButton!, dockButton!, layoutButton!, layoutHelper] where !view.isHidden {
             view.frame.origin.y += growth
         }
         let size = NSSize(width: 620, height: 800 + growth)
         settingsContent?.setFrameSize(size)
         window.setContentSize(size)
+    }
+    @objc private func toggleLayout() {
+        store.sameLayoutOnAllDisplays = layoutButton.state == .on
+        changed?(); refresh()
     }
     private func refreshRegistrationAppearance() {
         let presentation = Trial2SettingsPresentation(retainedShortcut: store.shortcut, registration: registrationStatus, isRecording: isRecording)

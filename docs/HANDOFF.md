@@ -1,3 +1,21 @@
+## TASK-OVERLAY-008 / v0.1.0-trial.6（現行ソース・出荷引き継ぎ）
+
+現行製品は **Sheerpane 0.1.0 (6)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=6`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r12b Approve と Lead の GO を受け、trial.6 として出荷する実装です。trial.5 はベース commit `7f5277aba4d453516458b0c04b3105d33992f62d` として出荷済みです。この作業の commit 時点では、trial.6 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に記入します。trial.1–trial.5 の履歴は保持します。
+
+- 保存キーは `sameLayoutOnAllDisplays`（既定 ON）、`panels`（共有配置）、`sharedLayoutReferenceSize`、`layoutsByDisplay`。共有・画面別の参照サイズは Codable な `width` / `height` オブジェクト。旧配置の割合値は書き換えず、初回表示画面を参照サイズに採用します。OFF の初回表示では現在の表示配置、または共有配置をコピーし、以後は画面別に編集・保存します。切断した画面の配置は保持し、Chira 移行元には書き込みません。
+- 安定 ID は注入可能な `DisplayUUIDProviding` 経由で、ColorSync の `CGDisplayCreateUUIDFromDisplayID` → `CFUUIDCreateString` により生成する `uuid:` キー。数値 display ID の変更には依存しません。UUID が得られなければ画面ごとのランダムな `ephemeral:` キーを使い、永続化せず、別画面へ再利用しません。切断時に破棄するため、この fallback では再接続復元を保証しません。
+- r12b 配置: フレームだけを縮め、通常サイズの文字・chrome・Web コンテンツを再レイアウトします。layer / affine の視覚的スケールは使いません。通常のフレーム寸法目安は元の 0.6 倍以上、240×160pt 下限。保存順に左→右、上→下へ 12pt 間隔で折り返します。縦に不足すれば 28pt のタイトルバー刻みでカスケードし、後のパネルを手前に描画して各タイトルをクリック可能にします。必要な場合はフレーム高さをさらに削って画面内に収めます。画面高さが枚数×28pt に満たない場合だけ露出幅を画面高さ÷枚数とし、完全なタイトルバーや本文が読めないリスクを残します。自由な重なり圧縮は行いません。
+- チェックボックスは「すべてのディスプレイで同じ配置」。
+- r12b 保存: 同じ配置が ON で shrink / wrap / cascade を行った画面では、表示用の配置・小画面参照サイズを共有配置へ保存しません。並べ替えは ID 順序のみ反映し、既存 ID の割合値と参照サイズを保持します。URL・追加削除は反映できます。補正不要な画面での移動・リサイズは共有配置に保存可能。OFF は表示どおり画面別に保存します。
+- r12b 設定: helper 行の下端から「診断」見出しの上端まで約20ptを確保し、追加した分だけウインドウを下へ伸ばします。r11b のログイン・Dock の可変配置を維持します。r12b-layout-wrap / r12b-layout-stack / r12b-layout-settings の light / dark fixture は LayoutFitter を通し、メモリ保存と偽ログインサービスを使います。
+- 仕上げ（未実装）:
+  - 重ねたパネルが左の1列に集まらないよう、横に空きがあるときは列ごとに分けて重ねる。
+  - ずらす幅の下限を 20pt にする。
+
+監督側の検証（出荷前、2026-11-16 JST）: `swift test` は 160 件すべて成功。`./scripts/build-sheerpane.sh` と `./scripts/build-sheerpane.sh --trial` は成功。r12b プレビュー（折り返し、タイトルバーカスケード、設定の間隔 × ライト／ダーク）を確認済み。
+
+未確認: 2台目のディスプレイでの実機確認、抜き差ししたあとの並びの復元、ポインタのある画面に出ること、重なったタイトルバーをクリックして前に出す操作。trial.4 と trial.5 の未確認項目も引き続き未確認。
+
 # Sheerpane 引き継ぎ
 
 ## TASK-OVERLAY-006 + guided 修正 / v0.1.0-trial.5（現行ソース・出荷引き継ぎ）

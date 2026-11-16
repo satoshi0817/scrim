@@ -203,6 +203,12 @@ public final class SettingsStore {
     public var method: InputMethod { get { read("method", fallback: .carbon) } set { write(newValue, "method") } }
     public var side: ModifierSide { get { read("side", fallback: .rightOption) } set { write(newValue, "side") } }
     public var panels: [PanelRecord] { get { read("panels", fallback: []) } set { write(newValue, "panels") } }
+    public var sameLayoutOnAllDisplays: Bool { get { read("sameLayoutOnAllDisplays", fallback: true) } set { write(newValue, "sameLayoutOnAllDisplays") } }
+    public var sharedLayoutReferenceSize: CGSize? {
+        get { read("sharedLayoutReferenceSize", fallback: Optional<LayoutSize>.none)?.size }
+        set { write(newValue.map { LayoutSize($0) }, "sharedLayoutReferenceSize") }
+    }
+    public var layoutsByDisplay: [String: DisplayLayout] { get { read("layoutsByDisplay", fallback: [:]) } set { write(newValue, "layoutsByDisplay") } }
     public var guided: Bool { get { Self.isGuidedTrue(storage.object(forKey: "guided")) } set { write(newValue, "guided") } }
     private static func isGuidedTrue(_ value: Any?) -> Bool {
         if let data = value as? Data {

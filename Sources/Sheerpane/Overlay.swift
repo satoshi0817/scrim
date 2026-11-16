@@ -34,6 +34,7 @@ final class PanelView: NSView, WKNavigationDelegate {
     private let dormantBadge = NSView()
     private let resumeHint = label("クリックで再開", size: 12)
     private var previewContent: NSView?
+    private var previewPlaceholder: NSTextField?
     private let titleLabel = label("ウェブパネル", size: 12)
     private let spinner = NSProgressIndicator()
     private let menuButton: ActionButton
@@ -67,7 +68,9 @@ final class PanelView: NSView, WKNavigationDelegate {
             let content = NSView(); content.wantsLayer = true
             content.layer?.backgroundColor = NSColor(calibratedRed: 0.25, green: 0.34, blue: 0.39, alpha: 1).cgColor
             let placeholder = label("ひと息つくための、小さな窓", size: 20)
-            placeholder.frame = NSRect(x: 20, y: 60, width: 360, height: 40); content.addSubview(placeholder)
+            placeholder.usesSingleLineMode = false; placeholder.maximumNumberOfLines = 0
+            placeholder.lineBreakMode = .byWordWrapping; placeholder.cell?.wraps = true
+            previewPlaceholder = placeholder; content.addSubview(placeholder)
             previewContent = content; addSubview(content, positioned: .below, relativeTo: image)
         }
         setDormantAppearance(false)
@@ -76,11 +79,16 @@ final class PanelView: NSView, WKNavigationDelegate {
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
         super.layout()
-        titleLabel.frame = NSRect(x: 42, y: bounds.height-28, width: max(40, bounds.width-100), height: 22)
+        titleLabel.frame = NSRect(x: 42, y: bounds.height-LayoutFitter.titleBarHeight, width: max(40, bounds.width-100), height: 22)
         subviews.first?.frame.origin.y = bounds.height-30
         menuButton.frame = NSRect(x: bounds.width-44, y: bounds.height-32, width: 36, height: 28)
         let content = NSRect(x: 7, y: 7, width: max(0, bounds.width-14), height: max(0, bounds.height-43))
         web?.frame = content; image.frame = content; previewContent?.frame = content
+        if let placeholder = previewPlaceholder {
+            let width = max(1, content.width-40)
+            let height = ceil(placeholder.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)).height ?? 0)
+            placeholder.frame = NSRect(x: 20, y: max(0, (content.height-height)/2), width: width, height: height)
+        }
         dormantBadge.frame = NSRect(x: content.midX-50, y: content.midY+4, width: 100, height: 32)
         dormant.frame = NSRect(x: 10, y: 5, width: 80, height: 22)
         resumeHint.frame = NSRect(x: 0, y: content.midY-24, width: bounds.width, height: 20)
@@ -178,6 +186,12 @@ final class OverlayController {
     var isSettingsKey: (() -> Bool)?
     private var visibilityRevision = 0
     private var monitor: Any?
+    private let displayIdentity = DisplayIdentity()
+    private var activeDisplay: String?
+    private var activeShared = true
+    private var presentationWasFitted = false
+    private var ephemeralLayouts: [String: DisplayLayout] = [:]
+    private var screenObserver: NSObjectProtocol?
     init(store: SettingsStore) {
         self.store = store; records = Array(store.panels.prefix(PanelPool.maximum))
         root = Backdrop(frame: NSRect(x: 0, y: 0, width: 1800, height: 1169))
@@ -190,6 +204,10 @@ final class OverlayController {
         addButton = ActionButton("＋ パネルを追加") { [weak self] in self?.addPrompt() }; root.addSubview(addButton)
         for record in records { install(record); pool.add(record.id) }
         reconcile()
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            let ids = Set(NSScreen.screens.compactMap { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value })
+            self?.displayIdentity.forgetUnavailable(connected: ids)
+        }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { [weak self] event in
             guard let self, self.state == .pinned, event.window === self.panel else { return event }
             if event.type == .keyDown && event.keyCode == 53 { self.onDismiss?(); return nil }
@@ -220,8 +238,30 @@ final class OverlayController {
             return
         }
         if wasHidden, let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
+            let current = activeDisplay == nil ? nil : displayedLayout()
+            let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            // No screen index/name fallback: missing UUID/number never borrows another display's layout.
+            let key = number.map { displayIdentity.key(for: $0) } ?? "ephemeral:" + UUID().uuidString
+            let layout = (!store.sameLayoutOnAllDisplays ? ephemeralLayouts[key] : nil)
+                ?? store.layout(for: key, screen: screen.frame.size, current: current)
+            activeDisplay = key; activeShared = store.sameLayoutOnAllDisplays
             panel.setFrame(screen.frame, display: false); root.frame.size = screen.frame.size
-            for record in records { views[record.id]?.frame = record.placement.restore(screen: screen.frame.size) }
+            let selected = Array(layout.panels.prefix(PanelPool.maximum))
+            for id in Array(views.keys) where !selected.contains(where: { $0.id == id }) {
+                views.removeValue(forKey: id)?.removeFromSuperview(); pool.remove(id)
+            }
+            records = selected
+            let selectedLayout = DisplayLayout(panels: records, referenceSize: layout.referenceSize)
+            presentationWasFitted = LayoutFitter.needsFitting(layout: selectedLayout, screen: screen.frame.size)
+            for record in records {
+                if views[record.id]?.url != record.url { views.removeValue(forKey: record.id)?.removeFromSuperview(); pool.remove(record.id) }
+                if views[record.id] == nil { install(record); pool.add(record.id) }
+            }
+            for (record, frame) in zip(records, LayoutFitter.frames(layout: DisplayLayout(panels: records, referenceSize: layout.referenceSize), screen: screen.frame.size)) {
+                views[record.id]?.frame = frame
+                if let view = views[record.id] { root.addSubview(view, positioned: .above, relativeTo: nil); view.needsLayout = true }
+            }
+            reconcile()
         }
         layoutChrome(); panel.alphaValue = plan.alpha; panel.orderFrontRegardless()
         if plan.makeKey { panel.makeKey() }
@@ -266,6 +306,9 @@ final class OverlayController {
     func touch(_ id: UUID) {
         guard state == .pinned, let view = views[id] else { return }
         root.addSubview(view, positioned: .above, relativeTo: nil); pool.view(id); reconcile()
+        if let index = records.firstIndex(where: { $0.id == id }) {
+            let record = records.remove(at: index); records.append(record); persist()
+        }
     }
     func add(_ url: URL) {
         guard records.count < PanelPool.maximum else { NSSound.beep(); return }
@@ -280,8 +323,27 @@ final class OverlayController {
         alert.beginSheetModal(for: panel) { [weak self] response in if response == .alertFirstButtonReturn, let url = SettingsStore.normalize(field.stringValue) { self?.add(url) } }
     }
     private func saveFrames() {
-        for i in records.indices { if let view = views[records[i].id] { records[i].placement = FractionalFrame(frame: view.frame, screen: root.bounds.size) } }; persist()
+        persist()
     }
-    private func persist() { store.panels = records }
-    deinit { if let monitor { NSEvent.removeMonitor(monitor) }; panel.orderOut(nil) }
+    private func displayedLayout() -> DisplayLayout {
+        var displayed = records
+        for i in displayed.indices {
+            if let view = views[displayed[i].id] { displayed[i].placement = FractionalFrame(frame: view.frame, screen: root.bounds.size) }
+        }
+        return DisplayLayout(panels: displayed, referenceSize: root.bounds.size)
+    }
+    private func persist() {
+        guard let display = activeDisplay else { return }
+        let layout = displayedLayout()
+        records = layout.panels
+        // Web navigation callbacks can arrive after the settings toggle but before show.
+        guard activeShared == store.sameLayoutOnAllDisplays else { return }
+        if !activeShared && display.hasPrefix("ephemeral:") { ephemeralLayouts[display] = layout }
+        else { store.savePresentedLayout(layout, for: display, wasFitted: presentationWasFitted) }
+    }
+    deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        panel.orderOut(nil)
+    }
 }
