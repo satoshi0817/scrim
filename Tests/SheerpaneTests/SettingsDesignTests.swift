@@ -95,13 +95,13 @@ final class SettingsDesignTests: XCTestCase {
         }
     }
 
-    func testSheerpaneResourceVersionIsZeroOneZeroBuildSix() throws {
+    func testSheerpaneResourceVersionIsZeroOneZeroBuildSeven() throws {
         // Read the repository resource; this creates no preferences or plist file.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let data = try Data(contentsOf: root.appendingPathComponent("Resources/Sheerpane/Info.plist"))
         let plist = try XCTUnwrap(try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any])
         XCTAssertEqual(plist["CFBundleShortVersionString"] as? String, "0.1.0")
-        XCTAssertEqual(plist["CFBundleVersion"] as? String, "6")
+        XCTAssertEqual(plist["CFBundleVersion"] as? String, "7")
         XCTAssertEqual(plist["CFBundleIdentifier"] as? String, "com.satoshi0817.Sheerpane")
         XCTAssertEqual(plist["CFBundleIconFile"] as? String, "AppIcon.icns")
         for key in ["CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"] {

@@ -1,8 +1,9 @@
 import AppKit
+import PDFKit
 import SheerpaneCore
 import SheerpaneAssets
 
-/// No window is ordered and no web view or hotkey is created in this path.
+/// No window is ordered and no hotkey is registered in this path.
 func renderPreviews(directory: URL) throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let states = ["empty", "peek", "pinned", "dormant", "menu", "settings", "hotkey-error",
@@ -16,7 +17,7 @@ func renderPreviews(directory: URL) throws {
             store.method = state == "guide-permission" ? .eventTap : .carbon
             let guide = FirstRunGuideView(shortcut: store.shortcut, method: store.method)
             guide.frame.origin = NSPoint(x: 590, y: 384); root.addSubview(guide)
-            let caption = label("Sheerpane 0.1.0 (6) · TASK-OVERLAY-008 開発中 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
+            let caption = label("Sheerpane 0.1.0 (7) · TASK-OVERLAY-007 開発中 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
             caption.frame = NSRect(x: 180, y: 1060, width: 1440, height: 40); root.addSubview(caption)
         } else if state == "settings" || state == "hotkey-error" {
             let store = SettingsStore(storage: MemorySettingsStorage())
@@ -41,7 +42,7 @@ func renderPreviews(directory: URL) throws {
             }
             if state == "menu" {
                 let box = NSView(frame: NSRect(x: 1430, y: 470, width: 240, height: 160)); box.wantsLayer = true; box.layer?.backgroundColor = NSColor.darkGray.cgColor; box.layer?.cornerRadius = 10
-                for (i, title) in ["更新", "既定のアプリで開く", "複製", "削除"].enumerated() { let text = label(title); text.frame = NSRect(x: 18, y: 125-CGFloat(i)*36, width: 210, height: 26); box.addSubview(text) }; root.addSubview(box)
+                for (i, title) in ["更新", "既定のアプリで開く", "複製", "パネルを閉じる"].enumerated() { let text = label(title); text.frame = NSRect(x: 18, y: 125-CGFloat(i)*36, width: 210, height: 26); box.addSubview(text) }; root.addSubview(box)
             }
         }
         root.layoutSubtreeIfNeeded()
@@ -52,6 +53,7 @@ func renderPreviews(directory: URL) throws {
         host.contentView = nil
     }
     try renderEntryReviews(directory: directory)
+    try renderFileReviews(directory: directory)
 }
 
 private func renderEntryReviews(directory: URL) throws {
@@ -73,7 +75,7 @@ private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: 
     root.appearance = appearance; root.wantsLayer = true; root.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
     let host = NSWindow(contentRect: root.frame, styleMask: .borderless, backing: .buffered, defer: false)
     host.appearance = appearance; host.contentView = root; host.isReleasedWhenClosed = false
-    let caption = NSTextField(labelWithString: "Sheerpane 0.1.0 (6) · TASK-OVERLAY-008 開発中 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
+    let caption = NSTextField(labelWithString: "Sheerpane 0.1.0 (7) · TASK-OVERLAY-007 開発中 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
     caption.textColor = .secondaryLabelColor; caption.frame = NSRect(x: 50, y: 1210, width: 1650, height: 30); root.addSubview(caption)
     let store = SettingsStore(storage: MemorySettingsStorage())
     store.sameLayoutOnAllDisplays = state != "layout-off"
@@ -140,4 +142,90 @@ private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: 
     let filename = isR12b ? "r12b-\(state)-\(theme).png" : state.hasPrefix("layout-") ? "r12-\(state)-\(theme).png" : state.hasPrefix("login-") ? "r11b-\(state)-\(theme).png" : "sheerpane-trial5-\(theme)-\(state).png"
     try data.write(to: directory.appendingPathComponent(filename))
     host.contentView = nil
+}
+
+/// Uses bundled synthetic documents, the production file loader, and never orders a window.
+private func renderFileReviews(directory: URL) throws {
+    for (theme, name) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+        for kind in ["pdf", "html", "unreadable", "titlebar", "unsupported", "missing"] {
+            let root = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 760))
+            root.appearance = NSAppearance(named: name)
+            root.wantsLayer = true
+            root.layer?.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1).cgColor
+            let host = NSWindow(contentRect: root.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            host.isReleasedWhenClosed = false; host.contentView = root
+            let store = SettingsStore(storage: MemorySettingsStorage())
+            let sourceURL: URL
+            var temporaryFixture: URL?
+            switch kind {
+            case "unreadable", "missing":
+                sourceURL = directory.appendingPathComponent("r13-missing-" + UUID().uuidString + ".pdf")
+            case "unsupported":
+                sourceURL = directory.appendingPathComponent("r13b-unsupported-" + UUID().uuidString + ".txt")
+                try Data("Synthetic unsupported fixture".utf8).write(to: sourceURL)
+                temporaryFixture = sourceURL
+            default:
+                sourceURL = try filePreviewFixtureURL(kind == "titlebar" ? "html" : kind)
+            }
+            defer { if let temporaryFixture { try? FileManager.default.removeItem(at: temporaryFixture) } }
+            let record = PanelRecord(url: sourceURL, placement: FractionalFrame(frame: CGRect(x: 160, y: 100, width: 680, height: 540), screen: root.bounds.size))
+            store.panels = [record]
+            let view = PanelView(record: store.panels[0])
+            view.frame = record.placement.restore(screen: root.bounds.size)
+            root.addSubview(view); view.applyVisibility(VisibilityPlan(state: .pinned))
+            view.wake(); view.needsLayout = true; root.layoutSubtreeIfNeeded()
+            let caption = NSTextField(labelWithString: "Sheerpane 0.1.0 (7) · Local " + kind + " · " + theme)
+            caption.textColor = .white
+            caption.frame = NSRect(x: 60, y: 690, width: 880, height: 30); root.addSubview(caption)
+            if kind == "pdf" {
+                guard let pdfView = view.subviews.compactMap({ $0 as? PDFView }).first,
+                      let page = pdfView.document?.page(at: 0) else { throw CocoaError(.fileReadUnknown) }
+                // PDFView's tiled document surface does not reliably paint into
+                // cacheDisplay when its host window has never been ordered.
+                // Let PDFKit lay out at the final content size, then snapshot the
+                // loaded page itself rather than capturing an unpainted tile.
+                pdfView.layoutDocumentView()
+                let deadline = Date().addingTimeInterval(0.15)
+                while Date() < deadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                }
+                pdfView.layoutSubtreeIfNeeded()
+                pdfView.layoutDocumentView()
+                let picture = page.thumbnail(of: pdfView.bounds.size, for: pdfView.displayBox)
+                guard picture.size.width > 0, picture.size.height > 0 else { throw CocoaError(.fileReadUnknown) }
+                let image = NSImageView(frame: pdfView.frame)
+                image.image = picture; image.imageScaling = .scaleProportionallyUpOrDown
+                image.wantsLayer = true; image.layer?.backgroundColor = NSColor.white.cgColor
+                view.addSubview(image); pdfView.isHidden = true
+            }
+            if let web = view.web {
+                let deadline = Date().addingTimeInterval(8)
+                while web.isLoading && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+                guard !web.isLoading, view.fileState.message == nil else { throw CocoaError(.fileReadUnknown) }
+                var complete = false
+                var captured = false
+                web.takeSnapshot(with: nil) { picture, _ in
+                    if let picture {
+                        captured = true
+                        let image = NSImageView(frame: web.frame); image.image = picture
+                        image.imageScaling = .scaleAxesIndependently; view.addSubview(image); web.isHidden = true
+                    }
+                    complete = true
+                }
+                while !complete && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+                guard complete && captured else { throw CocoaError(.fileReadUnknown) }
+            }
+            root.layoutSubtreeIfNeeded()
+            guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { throw CocoaError(.fileWriteUnknown) }
+            root.cacheDisplay(in: root.bounds, to: bitmap)
+            guard let data = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+            let prefix = ["titlebar", "unsupported", "missing"].contains(kind) ? "r13b" : "r13"
+            try data.write(to: directory.appendingPathComponent("\(prefix)-file-\(kind)-\(theme).png"))
+            host.contentView = nil
+        }
+    }
+}
+private func filePreviewFixtureURL(_ ext: String) throws -> URL {
+    guard let url = StatusIcon.resourceURL(name: "r13-local", extension: ext) else { throw CocoaError(.fileReadNoSuchFile) }
+    return url
 }

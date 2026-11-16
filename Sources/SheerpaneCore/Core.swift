@@ -173,6 +173,13 @@ public struct PanelPool {
         for i in entries.indices { entries[i].live = liveIDs.contains(entries[i].id) }
     }
 }
+/// Closes panel metadata only; the source URL is never modified.
+public enum PanelActions {
+    public static func close(_ id: UUID, records: inout [PanelRecord], pool: inout PanelPool) {
+        pool.remove(id)
+        records.removeAll { $0.id == id }
+    }
+}
 public protocol SettingsStorage: AnyObject {
     func data(forKey key: String) -> Data?
     func object(forKey key: String) -> Any?

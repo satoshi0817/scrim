@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import PDFKit
 import SheerpaneCore
 
 func label(_ text: String, size: CGFloat = 14) -> NSTextField {
@@ -28,6 +29,9 @@ final class PanelView: NSView, WKNavigationDelegate {
     let id: UUID
     var url: URL
     var web: WKWebView?
+    private var document: PDFView?
+    private let fileError = FilePanelErrorView(frame: .zero)
+    private(set) var fileState: FilePanelState
     private var snapshot: NSImage?
     private let image = NSImageView()
     private let dormant = label("休止中")
@@ -51,7 +55,7 @@ final class PanelView: NSView, WKNavigationDelegate {
     private var sleeping = false
     private var epoch = 0
     init(record: PanelRecord, preview: Bool = false) {
-        id = record.id; url = record.url; menuButton = ActionButton("…", action: {})
+        id = record.id; url = record.url; fileState = FilePanelState(url: record.url); menuButton = ActionButton("…", action: {})
         super.init(frame: .zero)
         wantsLayer = true; layer?.backgroundColor = NSColor(calibratedWhite: 0.14, alpha: 1).cgColor; layer?.cornerRadius = 12; layer?.masksToBounds = true
         let icon = label("◈", size: 16); icon.frame = NSRect(x: 14, y: 0, width: 24, height: 28); icon.autoresizingMask = [.minYMargin]; addSubview(icon)
@@ -73,8 +77,11 @@ final class PanelView: NSView, WKNavigationDelegate {
             previewPlaceholder = placeholder; content.addSubview(placeholder)
             previewContent = content; addSubview(content, positioned: .below, relativeTo: image)
         }
+        fileError.isHidden = true; addSubview(fileError)
+        if url.isFileURL { titleLabel.stringValue = url.lastPathComponent }
         setDormantAppearance(false)
         applyVisibility(VisibilityPlan(state: .hidden))
+        if fileState.source == .unreadable { showFileError(loadFailed: false) }
     }
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
@@ -83,7 +90,9 @@ final class PanelView: NSView, WKNavigationDelegate {
         subviews.first?.frame.origin.y = bounds.height-30
         menuButton.frame = NSRect(x: bounds.width-44, y: bounds.height-32, width: 36, height: 28)
         let content = NSRect(x: 7, y: 7, width: max(0, bounds.width-14), height: max(0, bounds.height-43))
-        web?.frame = content; image.frame = content; previewContent?.frame = content
+        web?.frame = content; document?.frame = content
+        fileError.frame = content
+        image.frame = content; previewContent?.frame = content
         if let placeholder = previewPlaceholder {
             let width = max(1, content.width-40)
             let height = ceil(placeholder.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)).height ?? 0)
@@ -103,14 +112,46 @@ final class PanelView: NSView, WKNavigationDelegate {
             epoch += 1; sleeping = false; setDormantAppearance(false)
             return
         }
-        guard web == nil else { return }
+        guard web == nil, document == nil else { return }
+        fileState = FilePanelState(url: url); fileError.isHidden = true
+        switch fileState.source {
+        case .unreadable: showFileError(loadFailed: false); return
+        case .pdf(let file):
+            guard let pdf = PDFDocument(url: file), pdf.pageCount > 0 else { showFileError(); return }
+            let view = PDFView(); view.document = pdf; view.autoScales = true
+            document = view; addSubview(view, positioned: .below, relativeTo: titleLabel)
+            setDormantAppearance(false); needsLayout = true; return
+        default: break
+        }
         epoch += 1; sleeping = false; setDormantAppearance(false)
         spinner.startAnimation(nil)
         let view = WKWebView(frame: .zero); web = view; view.navigationDelegate = self
         addSubview(view, positioned: .below, relativeTo: titleLabel); needsLayout = true
-        view.load(URLRequest(url: url))
+        if case .html(let file) = fileState.source {
+            view.loadFileURL(file, allowingReadAccessTo: file.deletingLastPathComponent())
+        } else { view.load(URLRequest(url: url)) }
+    }
+    private func showFileError(loadFailed: Bool = true) {
+        if loadFailed { fileState.loadFailed() }
+        fileError.apply(fileState); web?.stopLoading(); web?.navigationDelegate = nil
+        web?.removeFromSuperview(); web = nil; document?.removeFromSuperview(); document = nil
+        spinner.stopAnimation(nil); setDormantAppearance(false); fileError.isHidden = false; needsLayout = true
+    }
+    func reloadContent() {
+        web?.stopLoading(); web?.navigationDelegate = nil; web?.removeFromSuperview(); web = nil
+        document?.removeFromSuperview(); document = nil; wake()
     }
     func sleep() {
+        if fileState.source == .unreadable { return }
+        if let document {
+            if let bitmap = document.bitmapImageRepForCachingDisplay(in: document.bounds) {
+                document.cacheDisplay(in: document.bounds, to: bitmap)
+                let picture = NSImage(size: document.bounds.size); picture.addRepresentation(bitmap)
+                snapshot = picture; image.image = picture
+            }
+            document.removeFromSuperview(); self.document = nil
+            setDormantAppearance(true); return
+        }
         guard !sleeping else { return }
         guard let view = web else { setDormantAppearance(true); return }
         sleeping = true; epoch += 1; let token = epoch
@@ -132,14 +173,17 @@ final class PanelView: NSView, WKNavigationDelegate {
         setDormantAppearance(true)
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        titleLabel.stringValue = webView.title ?? "ウェブパネル"; spinner.stopAnimation(nil)
-        if let current = webView.url, ["http", "https"].contains(current.scheme ?? "") { url = current; navigated?(current) }
+        titleLabel.stringValue = webView.title.flatMap { $0.isEmpty ? nil : $0 } ?? (url.isFileURL ? url.lastPathComponent : "ウェブパネル"); spinner.stopAnimation(nil)
+        if !url.isFileURL, let current = webView.url, ["http", "https"].contains(current.scheme ?? "") { url = current; navigated?(current) }
     }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { spinner.stopAnimation(nil) }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { spinner.stopAnimation(nil) }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { spinner.stopAnimation(nil); if url.isFileURL && (error as NSError).code != NSURLErrorCancelled { showFileError() } }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { spinner.stopAnimation(nil); if url.isFileURL && (error as NSError).code != NSURLErrorCancelled { showFileError() } }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if url.isFileURL { showFileError() }
+    }
     private func showMenu() {
         let menu = NSMenu()
-        for (index, text) in ["更新", "既定のアプリで開く", "複製", "削除"].enumerated() {
+        for (index, text) in ["更新", "既定のアプリで開く", "複製", "パネルを閉じる"].enumerated() {
             let item = NSMenuItem(title: text, action: #selector(menuAction(_:)), keyEquivalent: ""); item.tag = index; item.target = self; menu.addItem(item)
         }
         menu.popUp(positioning: nil, at: NSPoint(x: bounds.width-40, y: bounds.height-32), in: self)
@@ -287,10 +331,10 @@ final class OverlayController {
         view.command = { [weak self] command in
             guard let self, let view = self.views[record.id] else { return }
             switch command {
-            case 0: self.touch(record.id); view.web?.reload()
+            case 0: self.touch(record.id); view.reloadContent()
             case 1: NSWorkspace.shared.open(view.web?.url ?? view.url)
             case 2: self.add(view.web?.url ?? view.url)
-            default: view.removeFromSuperview(); self.views.removeValue(forKey: record.id); self.pool.remove(record.id); self.records.removeAll { $0.id == record.id }; self.persist(); self.layoutChrome()
+            default: view.removeFromSuperview(); self.views.removeValue(forKey: record.id); PanelActions.close(record.id, records: &self.records, pool: &self.pool); self.persist(); self.layoutChrome()
             }
         }
     }
@@ -314,7 +358,14 @@ final class OverlayController {
         guard records.count < PanelPool.maximum else { NSSound.beep(); return }
         let n = CGFloat(records.count % 5)
         let record = PanelRecord(url: url, placement: FractionalFrame(frame: NSRect(x: 100+n*48, y: 160+n*40, width: 480, height: 336), screen: root.bounds.size))
-        records.append(record); install(record); pool.add(record.id); reconcile(); persist(); layoutChrome()
+        records.append(record); install(record); pool.add(record.id)
+        persist()
+        let layout = displayedLayout()
+        presentationWasFitted = presentationWasFitted || LayoutFitter.needsFitting(layout: layout, screen: root.bounds.size)
+        for (entry, frame) in zip(records, LayoutFitter.frames(layout: layout, screen: root.bounds.size)) {
+            views[entry.id]?.frame = frame
+        }
+        reconcile(); persist(); layoutChrome()
     }
     private func addPrompt() {
         guard records.count < PanelPool.maximum else { NSSound.beep(); return }

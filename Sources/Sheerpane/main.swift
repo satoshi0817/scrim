@@ -1,6 +1,7 @@
 import AppKit
 import SheerpaneCore
 import SheerpaneAssets
+import UniformTypeIdentifiers
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store: SettingsStore
@@ -13,6 +14,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var item: NSStatusItem!
     private var registrationItem: NSMenuItem!
     private var openItem: NSMenuItem!
+    private var pendingFiles: [URL] = []
+    private var readyForFiles = false
+    private var openingFiles = false
+    private var receivedLaunchFiles = false
+    // Injectable: previews/tests never need to present the production panel.
+    var chooseFiles: (@escaping ([URL]) -> Void) -> Void = { completion in
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf, .html, UTType(filenameExtension: "xhtml") ?? .html]
+        panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        panel.begin { response in completion(response == .OK ? panel.urls : []) }
+    }
     #if DEBUG || TRIAL_DIAGNOSTICS
     var diagnostics = Diagnostics()
     var began: Double?
@@ -56,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         gestureItem = NSMenuItem(title: "", action: nil, keyEquivalent: ""); menu.addItem(gestureItem)
         openItem = NSMenuItem(title: "", action: #selector(openOverlay), keyEquivalent: ""); openItem.target = self; menu.addItem(openItem)
+        menu.addItem(fileOpenItem())
         menu.addItem(withTitle: "設定…", action: #selector(openSettings), keyEquivalent: ",").target = self
         registrationItem = NSMenuItem(title: "", action: #selector(openSettings), keyEquivalent: "")
         registrationItem.target = self; registrationItem.isHidden = true; menu.addItem(registrationItem)
@@ -82,11 +95,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         input.configure(store)
         refreshEntry(); applyDockPolicy()
         let firstRun = store.beginFirstRunGuidance()
-        if firstRun || input.registrationStatus.message != nil { settings.show() }
-        if firstRun { settings.firstRunGuidance() }
+        readyForFiles = true
+        // Defer guidance until launch-time open events have been drained.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if !self.pendingFiles.isEmpty {
+                let urls = self.pendingFiles; self.pendingFiles.removeAll(); self.openFiles(urls)
+            } else if !self.receivedLaunchFiles {
+                if firstRun || self.input.registrationStatus.message != nil { self.settings.show() }
+                if firstRun { self.settings.firstRunGuidance() }
+            }
+        }
     }
     func apply() { overlay.show(machine.state) }
-    private func applyDockPolicy() { NSApp.setActivationPolicy(store.dockVisible ? .regular : .accessory) }
+    private func fileOpenItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "ファイルを開く…", action: #selector(openFilePanel), keyEquivalent: "o")
+        item.keyEquivalentModifierMask = [.command]; item.target = self; return item
+    }
+    private func applyDockPolicy() {
+        NSApp.setActivationPolicy(store.dockVisible ? .regular : .accessory)
+        let main = NSMenu()
+        let appItem = NSMenuItem(); let appMenu = NSMenu(title: "Sheerpane")
+        appMenu.addItem(withTitle: "Sheerpane を終了", action: #selector(quit), keyEquivalent: "q").target = self
+        appItem.submenu = appMenu; main.addItem(appItem)
+        let file = NSMenuItem(); let fileMenu = NSMenu(title: "ファイル")
+        fileMenu.addItem(fileOpenItem()); file.submenu = fileMenu; main.addItem(file)
+        NSApp.mainMenu = main
+    }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        receivedLaunchFiles = true; openingFiles = true
+        guard readyForFiles else { pendingFiles.append(contentsOf: urls); return }
+        openFiles(urls)
+    }
+    private func openFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        openingFiles = true; settings.cancelRecording(); settings.window.orderOut(nil)
+        machine.pin()
+        // Re-select the pointer display before adding, even when already pinned.
+        overlay.show(.hidden, immediately: true); apply()
+        for url in urls { overlay.add(url) }
+        DispatchQueue.main.async { [weak self] in self?.openingFiles = false }
+    }
+    @objc private func openFilePanel() {
+        chooseFiles { [weak self] urls in self?.openFiles(urls) }
+    }
     private func refreshEntry() {
         guard item != nil else { return }
         gestureItem.title = GestureCopy.menu(permitted: gestureInput.available, secure: gestureInput.secure, fn: store.gesture.useFn)
@@ -101,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         machine.dismiss(); apply(); settings.show()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        openSettings()
+        if !openingFiles { openSettings() }
         return true
     }
     @objc func quit() { NSApp.terminate(nil) }

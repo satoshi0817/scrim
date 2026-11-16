@@ -1,3 +1,19 @@
+## TASK-OVERLAY-007 / v0.1.0-trial.7（現行ソース・出荷引き継ぎ）
+
+現行製品は **Sheerpane 0.1.0 (7)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=7`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r13b Approve と Lead の GO を受け、trial.7 として出荷する実装です。trial.6 はベース commit `74d0658465ae279926e6306334e8ac46f70c7af1` として出荷済みです。この作業の commit 時点では、trial.7 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に記入します。trial.1–trial.6 の履歴は保持します。
+
+- ローカル PDF / HTML / HTM / XHTML を新規パネルで開く。Finder の「このアプリケーションで開く」、ドロップ、「ファイルを開く…」⌘O。
+- 公式ビルドスクリプトは entitlements を渡さず、App Sandbox は未導入。本作業でも変更なし。既存 PanelRecord の URL フィールドに plain file:// URL を保存して復元する（security-scoped bookmark は使用しない）。既存 http(s) JSON は変更なし。
+- HTML は WKWebView.loadFileURL で当該ファイルのディレクトリだけを許可。PDF は PDFKit。欠落・非対応・読み込み失敗はパネル内中央に「このファイルは表示できません」。ダイアログは表示しない。
+- 拡張子のない PDF はシグネチャで判定する。
+- ファイルパネルとウェブパネルの「…」メニュー。読めないときの理由行。
+- 「削除」の表記を「パネルを閉じる」に変更。パネルを消すだけで、元のファイルには触れない。
+- r13-file-{pdf,html,unreadable}-{light,dark}.png のオフスクリーンプレビューを実装。合成 fixture は SheerpaneAssets/Resources/r13-local.*。実ファイルや実設定は使用しない。
+
+監督側の検証（出荷前、2026-11-16 JST）: `swift test` は 171 件すべて成功。
+
+未確認: 実機での Finder の「このアプリケーションで開く」、ドロップ、⌘O、実パネルでの PDF 表示、開くときのちらつき。
+
 ## TASK-OVERLAY-008 / v0.1.0-trial.6（現行ソース・出荷引き継ぎ）
 
 現行製品は **Sheerpane 0.1.0 (6)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=6`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r12b Approve と Lead の GO を受け、trial.6 として出荷する実装です。trial.5 はベース commit `7f5277aba4d453516458b0c04b3105d33992f62d` として出荷済みです。この作業の commit 時点では、trial.6 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に記入します。trial.1–trial.5 の履歴は保持します。
