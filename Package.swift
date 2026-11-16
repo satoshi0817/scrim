@@ -2,15 +2,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "Chira",
+    name: "Sheerpane",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "ChiraCore", targets: ["ChiraCore"]),
-        .executable(name: "Chira", targets: ["Chira"]),
+        .library(name: "SheerpaneCore", targets: ["SheerpaneCore"]),
+        .executable(name: "Sheerpane", targets: ["Sheerpane"]),
     ],
     targets: [
-        .target(name: "ChiraCore"),
-        .executableTarget(name: "Chira", dependencies: ["ChiraCore"]),
-        .testTarget(name: "ChiraTests", dependencies: ["ChiraCore"]),
+        .target(name: "SheerpaneCore"),
+        .target(name: "SheerpaneAssets", resources: [.process("Resources")]),
+        .executableTarget(name: "Sheerpane", dependencies: ["SheerpaneCore", "SheerpaneAssets"]),
+        .testTarget(name: "SheerpaneTests", dependencies: ["SheerpaneCore", "SheerpaneAssets"]),
     ]
 )
