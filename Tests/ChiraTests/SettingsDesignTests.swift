@@ -2,6 +2,26 @@ import XCTest
 @testable import ChiraCore
 
 final class SettingsDesignTests: XCTestCase {
+    func testFailureKeepsNativeNeutralFieldBorderWithoutWarningOverlay() {
+        for code in [RegistrationFeedback.alreadyRegisteredStatus, RegistrationFeedback.internalFailureStatus, -50] {
+            for recording in [false, true] {
+                let content = Trial2SettingsPresentation(retainedShortcut: .testCopy,
+                    registration: .carbonFailure(shortcut: .default, status: code), isRecording: recording)
+                XCTAssertEqual(content.recorderWarningBorderWidth, 0)
+                XCTAssertEqual(content.recorderWarningBorderWidth,
+                    Trial2SettingsPresentation(retainedShortcut: .testCopy, isRecording: recording).recorderWarningBorderWidth)
+            }
+        }
+    }
+
+    func testRetainedHelperImmediatelyFollowsMeasuredErrorHeight() {
+        // Short, wrapped and recording-prefixed messages retain the same tight gap.
+        for height in [15.0, 30, 45, 60, 80, 96] {
+            XCTAssertEqual(Trial2SettingsPresentation.retainedHelperTopOffset(errorHeight: height), height + 2)
+        }
+        XCTAssertEqual(Trial2SettingsPresentation.errorHelperGap, 2)
+    }
+
     func testRecordingCancelUsesCompleteLabelAndReservedButtonWidth() {
         let content = Trial2SettingsPresentation(retainedShortcut: .default, isRecording: true)
         XCTAssertEqual(content.changeButtonTitle, "キャンセル")

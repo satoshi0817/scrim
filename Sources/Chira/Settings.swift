@@ -144,8 +144,16 @@ final class SettingsController: NSObject, NSWindowDelegate {
         retainedShortcutLabel.isHidden = presentation.retainedHelperLine == nil
         recorder.wantsLayer = true
         recorder.layer?.cornerRadius = 4
-        recorder.layer?.borderWidth = failed ? 2 : 0
-        recorder.layer?.borderColor = failed ? NSColor.systemOrange.cgColor : nil
+        recorder.layer?.borderWidth = CGFloat(presentation.recorderWarningBorderWidth)
+        recorder.layer?.borderColor = nil
+        // Fit the wrapped copy so the helper follows text, not a reserved empty block.
+        let errorTop: CGFloat = recorder.frame.minY - 8
+        let errorHeight = ceil(registrationLabel.cell?.cellSize(forBounds:
+            NSRect(x: 0, y: 0, width: 560, height: CGFloat.greatestFiniteMagnitude)).height ?? 0)
+        registrationLabel.frame = NSRect(x: 28, y: errorTop-errorHeight, width: 560, height: errorHeight)
+        let helperTop = errorTop - CGFloat(Trial2SettingsPresentation.retainedHelperTopOffset(errorHeight: Double(errorHeight)))
+        let helperHeight = ceil(retainedShortcutLabel.cell?.cellSize.height ?? 18)
+        retainedShortcutLabel.frame = NSRect(x: 28, y: helperTop-helperHeight, width: 560, height: helperHeight)
         // Leave an eight-point gap below the recorder; reserve error space only when used.
         let shift: CGFloat = text.isEmpty ? 0 : 64
         method.frame.origin.y = 538-shift; side.frame.origin.y = 496-shift; modifierHint.frame.origin.y = 496-shift

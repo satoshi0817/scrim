@@ -54,7 +54,7 @@ func renderPreviews(directory: URL) throws {
 private func renderEntryReviews(directory: URL) throws {
     for (theme, name) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
         guard let appearance = NSAppearance(named: name) else { throw CocoaError(.fileWriteUnknown) }
-        for state in ["icon", "menu", "hotkey-error", "hotkey-generic-error", "recording", "first-run", "dock"] {
+        for state in ["icon", "menu", "settings", "hotkey-error", "hotkey-generic-error", "recording", "first-run", "dock"] {
             var failure: Error?
             appearance.performAsCurrentDrawingAppearance {
                 do { try renderEntryReview(directory: directory, appearance: appearance, theme: theme, state: state) }

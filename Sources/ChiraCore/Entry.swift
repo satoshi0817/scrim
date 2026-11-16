@@ -64,6 +64,13 @@ public struct Trial2SettingsPresentation: Equatable {
     public init(retainedShortcut: Shortcut, registration: HotkeyRegistrationStatus = .success, isRecording: Bool = false) {
         self.retainedShortcut = retainedShortcut; self.registration = registration; self.isRecording = isRecording
     }
+    /// Preserve the native neutral bezel; communicate registration failures in text only.
+    public var recorderWarningBorderWidth: Double { 0 }
+    public static let errorHelperGap: Double = 2
+    /// Offset from the error's top to the helper's top, using measured text height.
+    public static func retainedHelperTopOffset(errorHeight: Double) -> Double {
+        errorHeight + errorHelperGap
+    }
     public var recorderFieldText: String { retainedShortcut.displayString }
     public var changeButtonTitle: String { isRecording ? Self.cancelTitle : "変更" }
     public var errorLines: [String] { RegistrationFeedback.messageLines(registration) }
