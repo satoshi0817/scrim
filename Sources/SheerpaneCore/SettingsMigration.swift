@@ -1,12 +1,14 @@
 import Foundation
 
 /// A domain snapshot excludes registration defaults and unrelated global preferences.
-public protocol SettingsMigrationStorage: AnyObject {
+public protocol SettingsMigrationSource: AnyObject {
     func snapshot() -> [String: Any]
+}
+public protocol SettingsMigrationStorage: SettingsMigrationSource {
     func set(_ value: Any, forKey key: String)
 }
 
-public final class UserDefaultsMigrationStorage: SettingsMigrationStorage {
+public final class UserDefaultsMigrationSource: SettingsMigrationSource {
     private let defaults: UserDefaults
     private let domain: String
     public init(defaults: UserDefaults, domain: String) {
@@ -14,6 +16,16 @@ public final class UserDefaultsMigrationStorage: SettingsMigrationStorage {
         self.domain = domain
     }
     public func snapshot() -> [String: Any] { defaults.persistentDomain(forName: domain) ?? [:] }
+}
+
+public final class UserDefaultsMigrationStorage: SettingsMigrationStorage {
+    private let defaults: UserDefaults
+    private let source: UserDefaultsMigrationSource
+    public init(defaults: UserDefaults, domain: String) {
+        self.defaults = defaults
+        source = UserDefaultsMigrationSource(defaults: defaults, domain: domain)
+    }
+    public func snapshot() -> [String: Any] { source.snapshot() }
     public func set(_ value: Any, forKey key: String) { defaults.set(value, forKey: key) }
 }
 
@@ -27,7 +39,7 @@ public enum SettingsMigration {
         environment["SHEERPANE_DEFAULTS_SUITE"] == nil
     }
 
-    public static func migrate(source: SettingsMigrationStorage, destination: SettingsMigrationStorage) {
+    public static func migrate(source: SettingsMigrationSource, destination: SettingsMigrationStorage) {
         let existing = destination.snapshot()
         guard existing[migratedKey] as? Bool != true else { return }
         for (key, value) in source.snapshot() where key != migratedKey && existing[key] == nil {

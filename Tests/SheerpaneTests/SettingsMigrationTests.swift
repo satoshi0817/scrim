@@ -10,6 +10,15 @@ final class SettingsMigrationTests: XCTestCase {
         func snapshot() -> [String: Any] { reads += 1; return values }
         func set(_ value: Any, forKey key: String) { writes += 1; values[key] = value }
     }
+    private final class ReadOnlyChangingSource: SettingsMigrationSource {
+        private(set) var reads = 0
+        func snapshot() -> [String: Any] {
+            reads += 1
+            // A later read would observe newer external settings; no fixture writes.
+            return reads == 1 ? ["guided": Data("true".utf8)] :
+                ["guided": Data("true".utf8), "laterSetting": Data([1, 2, 3])]
+        }
+    }
 
     func testFirstMigrationCopiesAllStoredKeysWithoutDecoding() throws {
         let shortcut = try JSONEncoder().encode(Shortcut.testCopy)
@@ -25,10 +34,9 @@ final class SettingsMigrationTests: XCTestCase {
     }
 
     func testSecondLaunchDoesNotReadSourceOrWriteDestination() {
-        let source = MemoryDomain(["guided": Data("true".utf8)])
+        let source = ReadOnlyChangingSource()
         let destination = MemoryDomain()
         SettingsMigration.migrate(source: source, destination: destination)
-        source.values["laterSetting"] = Data([1, 2, 3])
         let previousWrites = destination.writes
         SettingsMigration.migrate(source: source, destination: destination)
         XCTAssertEqual(source.reads, 1)

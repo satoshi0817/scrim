@@ -1,8 +1,34 @@
 # Sheerpane 引き継ぎ
 
-## TASK-OVERLAY-005 / v0.1.0-trial.4（現行ソース・出荷引き継ぎ）
+## TASK-OVERLAY-006 + guided 修正 / v0.1.0-trial.5（現行ソース・出荷引き継ぎ）
 
-現行製品は **Sheerpane 0.1.0 (4)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=4`、bundle ID は `com.satoshi0817.Sheerpane`。Lead / PM / Designer の GO を受け、trial.4 として出荷する実装です。この作業はバージョンと文書の更新のみで、出荷完了の記録ではありません。supervisor がテスト、通常版・診断版のビルド、commit / push、署名、公証、タグ、非公開 prerelease を実施します。trial.4 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に supervisor が記入します。trial.1 / trial.2 / trial.3 の記録は下記に保持します。trial.3 は名称変更・移行版として出荷済みで、以前「trial.3」と呼んでいたジェスチャー計画は、この trial.4 の確定仕様に置き換わります。
+現行製品は **Sheerpane 0.1.0 (5)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=5`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r11b Approve と Lead の GO を受け、trial.5 として出荷する実装です。trial.4 はベース commit `29f90e871b44ca8e343fc18ba82d44735acc70f9` として出荷済みです。この作業の commit 時点では、trial.5 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に記入します。trial.1–trial.4 の履歴は保持します。
+
+- guided は Bool true、文字列 "true"、Data 内の JSON Bool true / JSON 文字列 "true" / UTF-8 "true" を true として読みます。それ以外と未設定は false。初回案内の開始時と設定ウインドウを閉じるときに JSON Bool true で保存し直します。移行元の Chira 設定は読み取り専用で、書き込み・削除しません。
+- 設定では、ジェスチャー説明の約 20pt 下に「ログイン時に Sheerpane を開く」と「Dock に Sheerpane を表示」を1つのグループとして置きます。保存 bool は真実にせず、`SMAppService.mainApp` のライブ状態を表示します。起動や設定を開いただけでは登録しません。既定はオフです。
+- `.requiresApproval` のときはチェックをオンとして表示し、チェック見出しの先頭に左揃えで、secondaryLabel の補助文「システム設定の『ログイン項目』で許可が必要です」と「システム設定を開く」を出します。承認待ち・エラー用の高さは事前に空けず、出たときだけ伸びます。
+- 登録失敗の文言は「ログイン項目に登録できませんでした。システム設定の『ログイン項目』を確認してください。」、解除失敗は「ログイン項目から外せませんでした。システム設定の『ログイン項目』を確認してください。」です。色は systemRed、全文を折り返して表示し、内部のエラー理由は出しません。どちらのエラーの下にも「システム設定を開く」を付けます。失敗したらチェックを実際の登録状態に戻します。
+- `LoginItemService` / `LoginItemSettingsModel` を通し、テストとプレビューには `FakeLoginItemService` を注入します。実機でのログイン項目の登録と、システム設定での許可は未確認です。
+- 後続 polish（未実装）: 許可カードの「あとで」を左、「許可する」を右に入れ替え、カードの高さを内容に合わせて詰めます。
+
+監督側の検証（出荷前、2026-11-16 JST）: `swift test` は 144 件すべて成功（既存 132 + 新規 12）。`./scripts/build-sheerpane.sh` と `./scripts/build-sheerpane.sh --trial` は成功。r11b プレビュー（オフ、承認待ち、登録失敗、解除失敗 × ライト／ダーク）を確認済み。
+
+追加テスト（GuidedAndLoginItemTests）:
+
+- `testGuidedBoolTrue`
+- `testGuidedUTF8True`
+- `testGuidedStringTrue`
+- `testGuidedJSONBoolAndStringTrue`
+- `testGuidedFalseMissingAndInvalid`
+- `testTwoFreshLaunchesShowGuidanceOnlyOnceAndDismissalRewritesBool`
+- `testTwoLaunchesWithMigratedDataNeverShowGuidance`
+- `testLoginDefaultOffAndConstructionHasNoSideEffects`
+- `testLoginReflectsLiveStatusChanges`
+- `testLoginApprovalCopyAndButtonVisibility`
+- `testLoginRegisterAndUnregisterErrorsSurfaceAndRetainLiveStatus`
+- `testStoredBoolCannotOverrideLiveLoginStatus`
+
+### trial.4 から継続する 005 仕様
 
 ### ⌘ 2回押し peek の確定仕様
 
@@ -38,13 +64,13 @@
 
 ### 検証とプレビューの引き継ぎ
 
-005 の既存検証は **132テスト（元の93＋005の39）**。イベントと保存先は合成値・`MemorySettingsStorage` のみ。今回の版数検証は `testSheerpaneResourceVersionIsZeroOneZeroBuildFour`。出荷前の全テストと通常版・診断版ビルドは supervisor が再実行します。実キー・Input Monitoring・secure input・focus・実シートの確認は offscreen 画像とは別です。
+005 の既存検証に guided / 006 の 12 件を加え、出荷前の `swift test` は **144 件すべて成功**しました。イベントと保存先は合成値・`MemorySettingsStorage` のみ。今回の版数検証は `testSheerpaneResourceVersionIsZeroOneZeroBuildFive`。通常版と診断版（`--trial`）のビルドも成功しています。実キー・Input Monitoring・secure input・focus・実機のログイン項目登録とシステム設定での許可の確認は、offscreen 画像とは別です。
 
-現在のプレビュー名は `sheerpane-trial4-{light,dark}-{state}.png`。state は `icon, menu, settings, hotkey-error, hotkey-generic-error, recording, first-run, dock, gesture-default, gesture-advanced, permission-unasked, permission-denied, permission-granted, menu-permitted, menu-waiting, menu-secure`。旧 `overlay-002-*.png` も維持します。過去レビューの `sheerpane-trial3-*` は当時の画像名として保持します。プレビューは非表示ウィンドウ・メモリ保存で、実 tap / hotkey / 許可要求を作りません。この版数更新での再撮影は不要です。
+現在のプレビュー名は `sheerpane-trial5-{light,dark}-{state}.png`。state は `icon, menu, settings, hotkey-error, hotkey-generic-error, recording, first-run, dock, gesture-default, gesture-advanced, permission-unasked, permission-denied, permission-granted, menu-permitted, menu-waiting, menu-secure`。旧 `overlay-002-*.png` も維持します。過去レビューの `sheerpane-trial3-*` は当時の画像名として保持します。プレビューは非表示ウィンドウ・メモリ保存で、実 tap / hotkey / 許可要求を作りません。006 の状態は light/dark の fake fixture を追加しています。
 
 ## 過去の引き継ぎ記録（trial.1 / trial.2 / trial.3）
 
-以下の「現在のソース」「未着手」「未出荷」「計画のみ」は各記録を作成した当時の状態です。現行の版数・005 の操作・許可・出荷状況には、冒頭の trial.4 確定仕様を使ってください。古いジェスチャー暫定案や polling/toggle の説明は現行仕様ではありません。
+以下の「現在のソース」「未着手」「未出荷」「計画のみ」は各記録を作成した当時の状態です。現行の版数・005 の操作・許可・出荷状況には、冒頭の trial.5 開発版と継続する 005 仕様を使ってください。古いジェスチャー暫定案や polling/toggle の説明は現行仕様ではありません。
 
 ## 1. 目的と経緯
 

@@ -81,8 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         gestureInput.start(settings: store.gesture)
         input.configure(store)
         refreshEntry(); applyDockPolicy()
-        let firstRun = !store.guided
-        if firstRun { store.guided = true }
+        let firstRun = store.beginFirstRunGuidance()
         if firstRun || input.registrationStatus.message != nil { settings.show() }
         if firstRun { settings.firstRunGuidance() }
     }
@@ -126,7 +125,7 @@ guard let defaults = SettingsDefaultsPolicy.open(
 if SettingsMigration.shouldMigrate(environment: environment) {
     // Read the old domain through the new defaults object; never open or write an old suite.
     SettingsMigration.migrate(
-        source: UserDefaultsMigrationStorage(defaults: defaults, domain: SettingsMigration.legacyDomain),
+        source: UserDefaultsMigrationSource(defaults: defaults, domain: SettingsMigration.legacyDomain),
         destination: UserDefaultsMigrationStorage(defaults: defaults, domain: SettingsMigration.destinationDomain))
 }
 let store = SettingsStore(defaults: defaults)

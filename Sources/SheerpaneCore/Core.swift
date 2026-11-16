@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import CoreGraphics
 
 public enum OverlayState: Equatable { case hidden, peek, pinned
@@ -174,7 +175,11 @@ public struct PanelPool {
 }
 public protocol SettingsStorage: AnyObject {
     func data(forKey key: String) -> Data?
+    func object(forKey key: String) -> Any?
     func setData(_ data: Data?, forKey key: String)
+}
+public extension SettingsStorage {
+    func object(forKey key: String) -> Any? { data(forKey: key) }
 }
 extension UserDefaults: SettingsStorage {
     public func setData(_ data: Data?, forKey key: String) { set(data, forKey: key) }
@@ -198,7 +203,25 @@ public final class SettingsStore {
     public var method: InputMethod { get { read("method", fallback: .carbon) } set { write(newValue, "method") } }
     public var side: ModifierSide { get { read("side", fallback: .rightOption) } set { write(newValue, "side") } }
     public var panels: [PanelRecord] { get { read("panels", fallback: []) } set { write(newValue, "panels") } }
-    public var guided: Bool { get { read("guided", fallback: false) } set { write(newValue, "guided") } }
+    public var guided: Bool { get { Self.isGuidedTrue(storage.object(forKey: "guided")) } set { write(newValue, "guided") } }
+    private static func isGuidedTrue(_ value: Any?) -> Bool {
+        if let data = value as? Data {
+            if let bool = try? JSONDecoder().decode(Bool.self, from: data) { return bool }
+            if let string = try? JSONDecoder().decode(String.self, from: data) { return string == "true" }
+            return String(data: data, encoding: .utf8) == "true"
+        }
+        if let string = value as? String { return string == "true" }
+        if let number = value as? NSNumber {
+            return CFGetTypeID(number) == CFBooleanGetTypeID() && number.boolValue
+        }
+        return false
+    }
+    public func beginFirstRunGuidance() -> Bool {
+        guard !guided else { return false }
+        guided = true
+        return true
+    }
+    public func finishFirstRunGuidance() { guided = true }
     public func dockVisible(isTrial: Bool) -> Bool { read("dockVisible", fallback: isTrial) }
     public var dockVisible: Bool {
         get { dockVisible(isTrial: SheerpaneBuild.isTrial) }

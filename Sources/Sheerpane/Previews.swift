@@ -16,12 +16,12 @@ func renderPreviews(directory: URL) throws {
             store.method = state == "guide-permission" ? .eventTap : .carbon
             let guide = FirstRunGuideView(shortcut: store.shortcut, method: store.method)
             guide.frame.origin = NSPoint(x: 590, y: 384); root.addSubview(guide)
-            let caption = label("Sheerpane trial.4 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
+            let caption = label("Sheerpane 0.1.0 (5) · trial.5 準備中 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
             caption.frame = NSRect(x: 180, y: 1060, width: 1440, height: 40); root.addSubview(caption)
         } else if state == "settings" || state == "hotkey-error" {
             let store = SettingsStore(storage: MemorySettingsStorage())
             if state == "hotkey-error" { store.shortcut = .testCopy }
-            let settings = SettingsController(store: store, permissionState: { false })
+            let settings = SettingsController(store: store, permissionState: { false }, loginService: FakeLoginItemService())
             if state == "hotkey-error" { settings.registrationStatus = .carbonFailure(shortcut: .default, status: RegistrationFeedback.alreadyRegisteredStatus) }
             if let content = settings.window.contentView { content.removeFromSuperview(); content.frame.origin = NSPoint(x: 590, y: state == "gesture-advanced" ? 70 : 180); root.addSubview(content) }
         } else if state == "empty" {
@@ -57,7 +57,7 @@ func renderPreviews(directory: URL) throws {
 private func renderEntryReviews(directory: URL) throws {
     for (theme, name) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
         guard let appearance = NSAppearance(named: name) else { throw CocoaError(.fileWriteUnknown) }
-        for state in ["icon", "menu", "settings", "hotkey-error", "hotkey-generic-error", "recording", "first-run", "dock", "gesture-default", "gesture-advanced", "permission-unasked", "permission-denied", "permission-granted", "menu-permitted", "menu-waiting", "menu-secure"] {
+        for state in ["login-off", "login-on", "login-approval", "login-error", "login-unregister-error", "icon", "menu", "settings", "hotkey-error", "hotkey-generic-error", "recording", "first-run", "dock", "gesture-default", "gesture-advanced", "permission-unasked", "permission-denied", "permission-granted", "menu-permitted", "menu-waiting", "menu-secure"] {
             var failure: Error?
             appearance.performAsCurrentDrawingAppearance {
                 do { try renderEntryReview(directory: directory, appearance: appearance, theme: theme, state: state) }
@@ -69,12 +69,12 @@ private func renderEntryReviews(directory: URL) throws {
 }
 
 private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: String, state: String) throws {
-    let root = NSView(frame: NSRect(x: 0, y: 0, width: 1800, height: 1169))
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 1800, height: 1290))
     root.appearance = appearance; root.wantsLayer = true; root.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
     let host = NSWindow(contentRect: root.frame, styleMask: .borderless, backing: .buffered, defer: false)
     host.appearance = appearance; host.contentView = root; host.isReleasedWhenClosed = false
-    let caption = NSTextField(labelWithString: "Sheerpane trial.4 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
-    caption.textColor = .secondaryLabelColor; caption.frame = NSRect(x: 50, y: 1090, width: 1650, height: 30); root.addSubview(caption)
+    let caption = NSTextField(labelWithString: "Sheerpane 0.1.0 (5) · trial.5 準備中 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
+    caption.textColor = .secondaryLabelColor; caption.frame = NSRect(x: 50, y: 1210, width: 1650, height: 30); root.addSubview(caption)
     let store = SettingsStore(storage: MemorySettingsStorage())
     if state.hasPrefix("permission-") {
         let value = GesturePermissionState(rawValue: String(state.dropFirst("permission-".count)))!
@@ -91,13 +91,18 @@ private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: 
         store.dockVisible = true
         if state == "hotkey-error" || state == "hotkey-generic-error" { store.shortcut = .testCopy }
         if state == "gesture-advanced" { store.gesture.useFn = true }
-        let settings = SettingsController(store: store, permissionState: { false })
+        let login = FakeLoginItemService(status: (state == "login-on" || state == "login-unregister-error") ? .enabled : state == "login-approval" ? .requiresApproval : .notRegistered)
+        let settings = SettingsController(store: store, permissionState: { false }, loginService: login)
+        if state == "login-error" || state == "login-unregister-error" {
+            login.failure = NSError(domain: "Preview", code: 1, userInfo: [NSLocalizedDescriptionKey: "登録できませんでした。もう一度お試しください。"])
+            settings.loginModel.setEnabled(state == "login-error"); settings.refresh()
+        }
         if state == "gesture-advanced" { settings.previewAdvanced() }
         if state == "hotkey-error" { settings.registrationStatus = .carbonFailure(shortcut: .default, status: RegistrationFeedback.alreadyRegisteredStatus) }
         if state == "hotkey-generic-error" { settings.registrationStatus = .carbonFailure(shortcut: .default, status: RegistrationFeedback.internalFailureStatus) }
         if state == "recording" { settings.beginRecording(installMonitor: false) }
         if let content = settings.window.contentView { content.removeFromSuperview(); content.frame.origin = NSPoint(x: 590, y: state == "gesture-advanced" ? 70 : 180); root.addSubview(content) }
-        let icon = NSImageView(frame: NSRect(x: 1170, y: 1020, width: 18, height: 18))
+        let icon = NSImageView(frame: NSRect(x: 1170, y: 1160, width: 18, height: 18))
         icon.image = StatusIcon.image(warning: settings.registrationStatus != .success); icon.contentTintColor = .labelColor; root.addSubview(icon)
     }
     if state == "icon" || state == "dock" {
@@ -112,6 +117,7 @@ private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: 
     guard let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { throw CocoaError(.fileWriteUnknown) }
     root.cacheDisplay(in: root.bounds, to: bitmap)
     guard let data = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
-    try data.write(to: directory.appendingPathComponent("sheerpane-trial4-\(theme)-\(state).png"))
+    let filename = state.hasPrefix("login-") ? "r11b-\(state)-\(theme).png" : "sheerpane-trial5-\(theme)-\(state).png"
+    try data.write(to: directory.appendingPathComponent(filename))
     host.contentView = nil
 }

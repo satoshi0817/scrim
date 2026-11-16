@@ -43,7 +43,6 @@ final class SettingsController: NSObject, NSWindowDelegate {
     private var permissionTimer: Timer?
     private var permissionPolicy: GesturePermissionPresentationPolicy
     private var upperGestureViews: [(NSView, CGFloat)] = []
-    private var gestureExtraHeight: CGFloat { gestureView?.expanded == true ? 180 : 0 }
     func firstRunGuidance() { autoPresentPermission(.firstRun) }
     private func autoPresentPermission(_ trigger: GesturePermissionPresentationPolicy.Trigger) {
         if permissionPolicy.shouldPresent(trigger, granted: permissionState()) { presentGesturePermission() }
@@ -60,6 +59,11 @@ final class SettingsController: NSObject, NSWindowDelegate {
     private var changeButton: ActionButton!
     private var defaultButton: ActionButton!
     private var dockButton: NSButton!
+    let loginModel: LoginItemSettingsModel
+    private var loginButton: NSButton!
+    private let loginHelper = label(LoginItemSettingsModel.approvalText, size: 12)
+    private let loginError = label("", size: 12)
+    private var loginSettingsButton: ActionButton!
     var registrationStatus: HotkeyRegistrationStatus = .success {
         didSet { refreshRegistrationAppearance() }
     }
@@ -79,7 +83,9 @@ final class SettingsController: NSObject, NSWindowDelegate {
     private var diagnosticLabel: NSTextField!
     private var timer: Timer?
     #endif
-    init(store: SettingsStore, permissionState: @escaping () -> Bool = { AppGesturePermission().isGranted() }) {
+    init(store: SettingsStore, permissionState: @escaping () -> Bool = { AppGesturePermission().isGranted() },
+         loginService: LoginItemService = MainAppLoginItemService()) {
+        loginModel = LoginItemSettingsModel(service: loginService)
         self.store = store; self.permissionState = permissionState
         permissionPolicy = GesturePermissionPresentationPolicy(deferred: store.gesturePermissionDeferred)
         recordingSession = ShortcutRecordingSession(savedShortcut: store.shortcut)
@@ -124,7 +130,18 @@ final class SettingsController: NSObject, NSWindowDelegate {
         diagnosticLabel.stringValue = Diagnostics().text
         #endif
         upperGestureViews = root.subviews.filter { $0.frame.minY >= 590 }.map { ($0, $0.frame.minY) }
-        gestureView = GestureSettingsView(store: store); gestureView.frame.origin = NSPoint(x: 28, y: 280); root.addSubview(gestureView)
+        loginButton = NSButton(checkboxWithTitle: LoginItemSettingsModel.title, target: self, action: #selector(toggleLogin))
+        loginButton.frame = NSRect(x: 28, y: 0, width: 560, height: 26); root.addSubview(loginButton)
+        loginHelper.textColor = .secondaryLabelColor
+        loginHelper.frame = NSRect(x: 48, y: 326, width: 540, height: 22); root.addSubview(loginHelper)
+        loginSettingsButton = ActionButton(LoginItemSettingsModel.settingsTitle) { [weak self] in self?.loginModel.openSettings() }
+        loginSettingsButton.frame = NSRect(x: 48, y: 292, width: 200, height: 28); root.addSubview(loginSettingsButton)
+        loginError.textColor = .systemRed
+        loginError.alignment = .left
+        loginError.usesSingleLineMode = false; loginError.maximumNumberOfLines = 0
+        loginError.lineBreakMode = .byWordWrapping; loginError.cell?.wraps = true
+        loginError.frame = NSRect(x: 48, y: 326, width: 540, height: 22); root.addSubview(loginError)
+        gestureView = GestureSettingsView(store: store); root.addSubview(gestureView)
         gestureView.changed = { [weak self] in self?.gestureChanged?(); self?.refresh() }
         gestureView.permissionRequested = { [weak self] in self?.autoPresentPermission(.manual) }
         gestureView.gestureEnabled = { [weak self] in self?.autoPresentPermission(.gestureEnabled) }
@@ -141,6 +158,11 @@ final class SettingsController: NSObject, NSWindowDelegate {
         guide.stringValue = store.gesture.useFn ? "fn を2回押して、2回目を押したまま" : GestureCopy.action
         guide.font = .systemFont(ofSize: 23)
         dockButton.state = store.dockVisible ? .on : .off
+        loginButton.state = loginModel.isOn ? .on : .off
+        loginHelper.isHidden = !loginModel.showsApproval
+        loginSettingsButton.isHidden = !loginModel.showsSettings
+        loginError.stringValue = loginModel.errorText ?? ""
+        loginError.isHidden = loginModel.errorText == nil
         method.isEnabled = !isRecording; side.isEnabled = !isRecording
         changeButton.title = presentation.changeButtonTitle
         layoutShortcutControls()
@@ -150,15 +172,52 @@ final class SettingsController: NSObject, NSWindowDelegate {
         note.isHidden = permission.isHidden
         permission.isEnabled = !isRecording
         note.stringValue = !note.isHidden ? (permissionState() ? GuideContent.permissionGrantedText : content.permissionBlockText ?? "") : ""
-        refreshRegistrationAppearance()
         method.isHidden = true; side.isHidden = true; modifierHint.isHidden = true; permission.isHidden = true; note.isHidden = true
         gestureView?.isHidden = isRecording || registrationStatus != .success
         gestureView?.permissionGranted = permissionState()
-        let extra = gestureExtraHeight
-        upperGestureViews.forEach { $0.0.frame.origin.y = $0.1 + extra }
-        registrationLabel.frame.origin.y += extra; retainedShortcutLabel.frame.origin.y += extra
-        settingsContent?.setFrameSize(NSSize(width: 620, height: 800 + extra))
-        window.setContentSize(NSSize(width: 620, height: 800 + extra))
+        layoutLoginGroup()
+        refreshRegistrationAppearance()
+    }
+    private func layoutLoginGroup() {
+        // Lay out downward from the last visible gesture line, not its empty view bounds.
+        let gestureBottom = gestureView.subviews.filter { !$0.isHidden }.map { $0.frame.minY }.min() ?? 0
+        // Remove the unused bottom bounds too, so that this view cannot intercept
+        // clicks on the checkbox group placed in that formerly empty region.
+        if gestureBottom > 0 {
+            gestureView.subviews.forEach { $0.frame.origin.y -= gestureBottom }
+            gestureView.frame.size.height -= gestureBottom
+        }
+        gestureView.frame.origin = NSPoint(x: 28, y: 580 - gestureView.frame.height)
+        var cursor = gestureView.frame.minY - 20
+        loginButton.frame.origin.y = cursor - loginButton.frame.height
+        cursor = loginButton.frame.minY
+
+        let titleRect = loginButton.cell?.titleRect(forBounds: loginButton.bounds) ?? loginButton.bounds
+        let accessoryX = loginButton.frame.minX + titleRect.minX
+        let accessoryWidth = 588 - accessoryX
+        for text in [loginHelper, loginError] where !text.isHidden {
+            let height = ceil(text.cell?.cellSize(forBounds:
+                NSRect(x: 0, y: 0, width: accessoryWidth, height: CGFloat.greatestFiniteMagnitude)).height ?? 0)
+            cursor -= 6 + height
+            text.frame = NSRect(x: accessoryX, y: cursor, width: accessoryWidth, height: height)
+        }
+        if !loginSettingsButton.isHidden {
+            cursor -= 6 + 28
+            loginSettingsButton.frame = NSRect(x: accessoryX, y: cursor, width: 200, height: 28)
+        }
+        cursor -= 6 + dockButton.frame.height
+        dockButton.frame.origin.y = cursor
+
+        // Keep the bottom margin and diagnostics intact while extra rows grow downward
+        // in window coordinates. Hidden accessories contribute no height or spacing.
+        let growth = 252 - cursor
+        upperGestureViews.forEach { $0.0.frame.origin.y = $0.1 + growth }
+        for view in [gestureView!, loginButton!, loginHelper, loginError, loginSettingsButton!, dockButton!] where !view.isHidden {
+            view.frame.origin.y += growth
+        }
+        let size = NSSize(width: 620, height: 800 + growth)
+        settingsContent?.setFrameSize(size)
+        window.setContentSize(size)
     }
     private func refreshRegistrationAppearance() {
         let presentation = Trial2SettingsPresentation(retainedShortcut: store.shortcut, registration: registrationStatus, isRecording: isRecording)
@@ -202,6 +261,7 @@ final class SettingsController: NSObject, NSWindowDelegate {
     @objc private func methodChanged() { store.method = InputMethod.allCases[method.indexOfSelectedItem]; refresh(); changed?() }
     @objc private func sideChanged() { store.side = ModifierSide.allCases[side.indexOfSelectedItem]; changed?() }
     @objc private func toggleDock() { store.dockVisible = dockButton.state == .on; dockChanged?() }
+    @objc private func toggleLogin() { loginModel.setEnabled(loginButton.state == .on); refresh() }
     func beginRecording(installMonitor: Bool = true) {
         cancelRecording(silent: true)
         recordingSession = ShortcutRecordingSession(savedShortcut: store.shortcut); recordingSession.begin()
@@ -242,7 +302,10 @@ final class SettingsController: NSObject, NSWindowDelegate {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }; keyMonitor = nil; recorder?.recording = false
         if window.firstResponder === recorder { window.makeFirstResponder(nil) }
     }
-    func windowWillClose(_ notification: Notification) { cancelRecording(); closePermissionCard() }
+    func windowWillClose(_ notification: Notification) {
+        store.finishFirstRunGuidance()
+        cancelRecording(); closePermissionCard()
+    }
     func windowDidBecomeKey(_ notification: Notification) { refresh() }
     func windowDidResignKey(_ notification: Notification) { if isRecording { cancelRecording() } }
     private func requestModifierPermission() { presentGesturePermission() }
@@ -280,8 +343,7 @@ final class SettingsController: NSObject, NSWindowDelegate {
         if let card = permissionWindow { window.endSheet(card); card.close() }; permissionWindow = nil
     }
     func show() {
-        window.title = "Sheerpane 設定"; window.setContentSize(NSSize(width: 620, height: 800 + gestureExtraHeight))
-        settingsContent?.setFrameSize(NSSize(width: 620, height: 800 + gestureExtraHeight))
+        window.title = "Sheerpane 設定"
         window.contentView = settingsContent; refresh(); gestureChanged?(); bringSettingsToFront()
         // Opening Settings alone never auto-presents the card.
     }
