@@ -1,6 +1,136 @@
+# 現状と残作業（2026-11-17 JST）
+
+現行の main は **Sheerpane 0.1.0 (7)** です。commit は `80592fbccc6e76ab216ffb9caafd53386cf6b5f8`、tag は `v0.1.0-trial.7`、bundle ID は `com.satoshi0817.Sheerpane` です。この記録を書いた時点では、main は origin/main と一致していました。Sheerpane から Scrim への改名（TASK-OVERLAY-016 / trial.8）のソース差分は、まだありません。
+
+## リリース済み一覧
+
+いずれも非公開リポジトリ `satoshi0817/overlay-browser-trial` のプレリリースです。一般公開用ではありません。Apple Silicon（arm64）のみ、macOS 14 以降、Developer ID 署名・公証・staple 済みです。
+
+- **v0.1.0-trial.1**（Chira 0.1.0 (1)、2026-10-29）
+  - commit `83cb68e`、tag `v0.1.0-trial.1`
+  - zip `Chira-0.1.0-trial.1.zip`、SHA-256 `ed2eec52aff0c1d7aaa58dd1cfafb77e5db5d5ed242d251d1cca564a8ceaba59`、CDHash `c0287c50d4646b015416c09857c7f3f361dec1ed`
+  - https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.1
+  - 診断付きの試作。既定キーは ⌃⌥Space。登録失敗の表示、休止中パネル、権限案内。名前は仮で、商標は未確認。
+- **v0.1.0-trial.2**（Chira 0.1.0 (2)、2026-11-16）
+  - commit `1ac1f4f`、tag `v0.1.0-trial.2`
+  - zip `Chira-0.1.0-trial.2.zip`、SHA-256 `79207e4d15cef03ef022c6d69941dc6de065a70590a83480fc6b34f3fdbae32c`
+  - https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.2
+  - 既定キーを ⌃⌥P に変更。メニューバーアイコン、通常キーの記録、Dock 表示、初回案内。Designer 指摘の表示修正。
+- **v0.1.0-trial.3**（Sheerpane 0.1.0 (3)、2026-11-16）
+  - commit `b7b80fc`、tag `v0.1.0-trial.3`
+  - zip `Sheerpane-0.1.0-trial.3.zip`、SHA-256 `a1114ac20748cc56c2490c92821ca1ad5236cb5a74bb874b7bc3570ef23d392c`、公証後 CDHash `be4b40ea24f5137959128d3ecbababadb98ba07d`
+  - https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.3
+  - Chira から Sheerpane へ改名（bundle ID `com.satoshi0817.Sheerpane`）。アイコン、旧設定の一度だけのコピー、起動時の UserDefaults フォールバック、登録失敗時の中立な枠。
+- **v0.1.0-trial.4**（Sheerpane 0.1.0 (4)、2026-11-16）
+  - commit `29f90e8`、tag `v0.1.0-trial.4`
+  - zip `Sheerpane-0.1.0-trial.4.zip`、SHA-256 `e261e30806759dc8a9dee23964090c669f1ef6719015d3e0c51dc3e09928137c`、公証後 CDHash `5bee4bd3af8d73d4027206f6365ae4810888191a`
+  - https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.4
+  - ⌘ の2回押し、許可カード、fn / 🌐 の上級オプション。許可がなくても ⌃⌥P は使える。
+- **v0.1.0-trial.5**（Sheerpane 0.1.0 (5)、2026-11-16）
+  - commit `7f5277a`、tag `v0.1.0-trial.5`
+  - zip `Sheerpane-0.1.0-trial.5.zip`、SHA-256 `26eababd843a1e0a8c0f25f2c7f3727c8feba158ff18b44a3e89f25096d6baf9`（再ダウンロード一致）
+  - https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.5
+  - ログイン時の起動（006）。`guided` の初回案内が繰り返し出る問題の修正。
+- **v0.1.0-trial.6**（Sheerpane 0.1.0 (6)、2026-11-16）
+  - commit `74d0658`、tag `v0.1.0-trial.6`
+  - zip `Sheerpane-0.1.0-trial.6.zip`、SHA-256 `b48be87d0c2285d0d86752b324a864d15003f9377f82d32f131b23c0ca436b3c`（再ダウンロード一致）
+  - https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.6
+  - ディスプレイごとの配置（008）。「すべてのディスプレイで同じ配置」は既定でオン。小さい画面では縮めて折り返し、縦に収まらないときは 28pt ずつずらして重ねる。
+- **v0.1.0-trial.7**（Sheerpane 0.1.0 (7)、2026-11-16 23:31 JST）
+  - commit `80592fb`、tag `v0.1.0-trial.7`
+  - zip `Sheerpane-0.1.0-trial.7.zip`、SHA-256 `31071db87227846bb6dfbb1bde7f5489bf017b56f515e9305cb0a208324e0f2d`（再ダウンロード一致）、公証後 CDHash `aa21ff489cf70b6012b26762fabd518b6260c9e7`
+  - https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.7
+  - PDF / HTML をパネルで開く（Finder の「このアプリケーションで開く」、ドロップ、「ファイルを開く…」⌘O）。拡張子のない PDF の判定。ファイルパネルの「…」メニューと、読めないときの理由行。「削除」の表記を「パネルを閉じる」に変更（パネルを消すだけで、元のファイルには触れない）。監督側の `swift test` は 171 件すべて成功。
+
+## TASK-OVERLAY-016 / trial.8（Scrim への改名）の状態
+
+- 2026-11-16 23:31 JST ごろ、trial.7 出荷のあとに着手する予定でした。新しい Codex thread、base は main `80592fb`、bundle ID は `com.satoshi0817.Scrim`、バージョンは 0.1.0 (8)、アイコンは `/workspace/notch-review/icons/scrim/`、プレビューは `/workspace/notch-review/r14/`、アプリ内の文言はすべて Scrim にする、という方針です。
+- その直後に Grok Bot の利用枠が尽きたため、監督側の作業が途中で止まっています。Local Codex Runner を確認したところ、TASK-OVERLAY-016 の job / thread / worktree は作られていません。最後の job は TASK-OVERLAY-007 の継続 `f3ec869c-71dd-4ac5-b649-f80f84e585cb`（thread `01a1e4a5-176b-7ce2-b67e-00eeb92ff9f1`、worktree `66ca5a9f10746c4b442c954b`）で、2026-11-16 23:22 JST に成功しています。
+- 改名のソース差分はないため、ブランチ `task/overlay-016-scrim-rename` は作っていません。016 のテストとビルドも、差分がないので実行していません。
+- 改名は、利用枠が回復したあと、新しい Codex thread でやり直します。公開名の最終判断は、下の「公開前に決めること」に従います。非公開の試用版で Scrim を使うこと自体は、Lead の条件では止まっていません。
+
+## 次のタスク（Lead の一覧）
+
+1. **改名（trial.8 / TASK-OVERLAY-016）**: Sheerpane を Scrim にする。アイコンは Designer の `icons/scrim/`。アプリ内の文言（メニュー、設定、fn の注意書き、許可カード、エラー）をすべて Scrim にする。「このアプリについて」画面は、今のアプリにはまだないので、完全版の仕上げで最初から Scrim の名前で設計する。
+2. **009 自動更新**
+3. **010 ブラウザ／既定のアプリで開く**
+4. **011 閲覧データの消去**
+5. **012 カレンダー・リマインダー・時計（読み取りのみ）**
+6. **013 広告やトラッカーのブロック**
+
+## 仕上げのメモ
+
+- 診断なしの通常版（試用版の `--trial` / `TRIAL_DIAGNOSTICS` を外した配布）。
+- 「このアプリについて」画面とライセンス表記。
+- アップデートの仕組み。
+- Designer の細かい直し:
+  - 許可カードのボタン順と高さ
+  - 「システム設定を開く」の左端
+  - 列ごとのカスケードと最小オフセット 20pt
+  - ライトでファイルパネルの「…」が白く浮いて見えるので、ダークと同じ控えめな塗りに揃える（trial.7 は止めない仕上げ）
+  - タイトルバーのアイコンがファイル名より少し上にずれているので、縦の中心を揃える（同上）
+  - 設定画面の余白
+
+## Designer の仕事
+
+- trial.8（Scrim 改名）のプレビュー確認
+- 009〜013 のデザイン確認
+- ウィジェットの仕様書き
+
+## さとしさんの実機確認（trial.4〜7）
+
+まだ実機では確認できていません。戻ったら、次を順に見てください。
+
+**trial.4（手順 1〜8）**
+
+1. 出てきたカードの「許可する」を押します。
+2. システム設定の「入力監視」で Sheerpane をオンにします。カードに「許可されました」と出て閉じれば完了です。
+3. ⌘ を短く1回押して離し、すぐにもう1回押したままにします。押している間だけパネルが出れば OK です。
+4. 3 と同じ操作で、2回目を一瞬で離します。パネルが出たまま残れば OK です。もう一度呼び出すか Esc で閉じてください。
+5. 左の ⌘ と右の ⌘ を1回ずつ押しても、3 と同じようにパネルが出れば OK です。
+6. ⌘C、⌘Tab、⌘クリックをそれぞれ試します。どれでもパネルが出なければ OK です。
+7. ⌘ を2回押し、2回目を押したまま C を押します。パネルがすぐ消えて（出ないこともあります）、元のアプリでコピーができていれば OK です。
+8. パスワード欄に入力しながら ⌘ を2回押します。パネルが出ず、メニューの先頭が「パスワード入力中は…」になっていれば OK です。
+
+**trial.5**
+
+- ログイン項目の実登録と、システム設定での許可。「ログイン時に Sheerpane を開く」をオンにし、ログアウトしてログインし直し、自動で起動するか見る。2回起動して、初回案内が出ないことを確かめる。
+
+**trial.6**
+
+- 2台目のディスプレイでの実機確認、抜き差ししたあとの並びの復元、ポインタのある画面に出ること、重なったタイトルバーをクリックして前に出す操作。
+
+**trial.2 から継続**
+
+- 実メニューバーのアイコン（メニューバー管理ツールで隠れていると見えません）。
+- Chira からの設定移行。配布済みの Chira trial.1 と trial.2 は、自分の bundle ID を `UserDefaults(suiteName:)` に渡すため、Finder や `open` での起動時に落ち得ます。
+
+**trial.7**
+
+- Finder の「このアプリケーションで開く」、ドロップ、⌘O、実パネルでの PDF 表示、開くときのちらつき。
+
+## 公開前に決めること
+
+さとしさん自身の判断が必要です。非公開の試用版を Scrim で進めることと、一般公開の名前は分けて考えます。
+
+- **公開名**: Scrim のままか、「Scrim for Mac」のように言葉を足すか、別の名前にするか。
+- **商標の最終確認**: 同じ用途（押してのぞくブラウザ）の Scrim は見当たりませんでした。ただし、画面に重ねる系統の Mac アプリが2つ（ScrimApp、TryScrim）すでに「Scrim」と名乗っています。アメリカには同じつづりの SCRIM が 9類・42類にあり、日本には読み方が同じ「ＳＱＲＩＭ」の登録があります。scrim.com / .app / .dev / .io / .ai は登録済みです。公開時の重なりは Sheerpane より大きくなります。法的な判断ではなく、一次的な調べです。
+- **ライセンスの最終確認**。
+
+## ほかの worktree に残っている差分（参考・未 push）
+
+016 以外の worktree は、勝手には push していません。
+
+- TASK-OVERLAY-007（`66ca5a9f`）: HEAD は main と同じ `80592fb`。追跡ファイルの差分なし。未追跡の `preview-out/` のみ（commit しない）。
+- TASK-OVERLAY-008（`077ef8b3`）、006（`f129930e`）、005（`17b426bd`）: 追跡ファイルの差分なし。各 worktree の HEAD は、それぞれの出荷 commit（trial.6 / trial.5 / trial.4）のままです。
+- TASK-OVERLAY-014（`f6cda73a`、HEAD `521aca9`）: Chira から Sheerpane への改名差分が未 commit で残っています。この内容は trial.3（`b7b80fc`）として main に入済みです。
+- TASK-OVERLAY-003（`39144f2d`、HEAD `1ac1f4f`）: 登録失敗時の中立な枠と、補助文をエラーのすぐ下へ置く変更（4 ファイル、+38 / -3）が未 commit で残っています。この内容は `521aca9` として main に入済みです。
+
+---
+
 ## TASK-OVERLAY-007 / v0.1.0-trial.7（現行ソース・出荷引き継ぎ）
 
-現行製品は **Sheerpane 0.1.0 (7)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=7`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r13b Approve と Lead の GO を受け、trial.7 として出荷する実装です。trial.6 はベース commit `74d0658465ae279926e6306334e8ac46f70c7af1` として出荷済みです。この作業の commit 時点では、trial.7 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に記入します。trial.1–trial.6 の履歴は保持します。
+現行製品は **Sheerpane 0.1.0 (7)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=7`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r13b Approve と Lead の GO を受け、trial.7 として出荷する実装です。trial.6 はベース commit `74d0658465ae279926e6306334e8ac46f70c7af1` として出荷済みです。出荷結果（2026-11-16 23:31 JST）: commit `80592fbccc6e76ab216ffb9caafd53386cf6b5f8`、tag `v0.1.0-trial.7`（`3b17293`）、zip `Sheerpane-0.1.0-trial.7.zip`、SHA-256 `31071db87227846bb6dfbb1bde7f5489bf017b56f515e9305cb0a208324e0f2d`（再ダウンロード一致）、公証後 CDHash `aa21ff489cf70b6012b26762fabd518b6260c9e7`、Release https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.7 。trial.1–trial.6 の履歴は保持します。
 
 - ローカル PDF / HTML / HTM / XHTML を新規パネルで開く。Finder の「このアプリケーションで開く」、ドロップ、「ファイルを開く…」⌘O。
 - 公式ビルドスクリプトは entitlements を渡さず、App Sandbox は未導入。本作業でも変更なし。既存 PanelRecord の URL フィールドに plain file:// URL を保存して復元する（security-scoped bookmark は使用しない）。既存 http(s) JSON は変更なし。
@@ -16,7 +146,7 @@
 
 ## TASK-OVERLAY-008 / v0.1.0-trial.6（現行ソース・出荷引き継ぎ）
 
-現行製品は **Sheerpane 0.1.0 (6)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=6`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r12b Approve と Lead の GO を受け、trial.6 として出荷する実装です。trial.5 はベース commit `7f5277aba4d453516458b0c04b3105d33992f62d` として出荷済みです。この作業の commit 時点では、trial.6 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に記入します。trial.1–trial.5 の履歴は保持します。
+現行製品は **Sheerpane 0.1.0 (6)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=6`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r12b Approve と Lead の GO を受け、trial.6 として出荷する実装です。trial.5 はベース commit `7f5277aba4d453516458b0c04b3105d33992f62d` として出荷済みです。出荷結果（2026-11-16 22:53 JST）: commit `74d0658465ae279926e6306334e8ac46f70c7af1`、tag `v0.1.0-trial.6`（`b4a0a5f`）、zip `Sheerpane-0.1.0-trial.6.zip`、SHA-256 `b48be87d0c2285d0d86752b324a864d15003f9377f82d32f131b23c0ca436b3c`（再ダウンロード一致）、Release https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.6 。trial.1–trial.5 の履歴は保持します。
 
 - 保存キーは `sameLayoutOnAllDisplays`（既定 ON）、`panels`（共有配置）、`sharedLayoutReferenceSize`、`layoutsByDisplay`。共有・画面別の参照サイズは Codable な `width` / `height` オブジェクト。旧配置の割合値は書き換えず、初回表示画面を参照サイズに採用します。OFF の初回表示では現在の表示配置、または共有配置をコピーし、以後は画面別に編集・保存します。切断した画面の配置は保持し、Chira 移行元には書き込みません。
 - 安定 ID は注入可能な `DisplayUUIDProviding` 経由で、ColorSync の `CGDisplayCreateUUIDFromDisplayID` → `CFUUIDCreateString` により生成する `uuid:` キー。数値 display ID の変更には依存しません。UUID が得られなければ画面ごとのランダムな `ephemeral:` キーを使い、永続化せず、別画面へ再利用しません。切断時に破棄するため、この fallback では再接続復元を保証しません。
@@ -36,7 +166,7 @@
 
 ## TASK-OVERLAY-006 + guided 修正 / v0.1.0-trial.5（現行ソース・出荷引き継ぎ）
 
-現行製品は **Sheerpane 0.1.0 (5)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=5`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r11b Approve と Lead の GO を受け、trial.5 として出荷する実装です。trial.4 はベース commit `29f90e871b44ca8e343fc18ba82d44735acc70f9` として出荷済みです。この作業の commit 時点では、trial.5 の commit SHA、tag SHA、zip SHA-256、CDHash、Release URL は未確定であり、出荷後に記入します。trial.1–trial.4 の履歴は保持します。
+現行製品は **Sheerpane 0.1.0 (5)**。`CFBundleShortVersionString=0.1.0`、`CFBundleVersion=5`、bundle ID は `com.satoshi0817.Sheerpane`。アイコンは変更しません。Designer の r11b Approve と Lead の GO を受け、trial.5 として出荷する実装です。trial.4 はベース commit `29f90e871b44ca8e343fc18ba82d44735acc70f9` として出荷済みです。出荷結果（2026-11-16 22:17 JST）: commit `7f5277aba4d453516458b0c04b3105d33992f62d`、tag `v0.1.0-trial.5`（`856a400`）、zip `Sheerpane-0.1.0-trial.5.zip`、SHA-256 `26eababd843a1e0a8c0f25f2c7f3727c8feba158ff18b44a3e89f25096d6baf9`（再ダウンロード一致）、Release https://github.com/satoshi0817/overlay-browser-trial/releases/tag/v0.1.0-trial.5 。trial.1–trial.4 の履歴は保持します。
 
 - guided は Bool true、文字列 "true"、Data 内の JSON Bool true / JSON 文字列 "true" / UTF-8 "true" を true として読みます。それ以外と未設定は false。初回案内の開始時と設定ウインドウを閉じるときに JSON Bool true で保存し直します。移行元の Chira 設定は読み取り専用で、書き込み・削除しません。
 - 設定では、ジェスチャー説明の約 20pt 下に「ログイン時に Sheerpane を開く」と「Dock に Sheerpane を表示」を1つのグループとして置きます。保存 bool は真実にせず、`SMAppService.mainApp` のライブ状態を表示します。起動や設定を開いただけでは登録しません。既定はオフです。
