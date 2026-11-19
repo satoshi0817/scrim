@@ -21,7 +21,7 @@ final class EntryMenuPreviewView: NSView {
             row.frame = NSRect(x: 30, y: 280-CGFloat(index)*38, width: 600, height: 30); addSubview(row)
         }
         if let failure = state.failureMessage {
-            let text = NSTextField(wrappingLabelWithString: failure); text.textColor = .systemOrange
+            let text = NSTextField(wrappingLabelWithString: failure); text.textColor = ScrimPalette.nativeAmber
             text.frame = NSRect(x: 30, y: 28, width: 600, height: 94); addSubview(text)
         }
     }

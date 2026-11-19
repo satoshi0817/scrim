@@ -98,7 +98,7 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
         window.toolbarStyle = .preference
         tabs.tabStyle = .toolbar
         for page in NativeSettingsPage.allCases {
-            let host = NSHostingController(rootView: NativeSettingsForm(controller: self, page: page))
+            let host = NSHostingController(rootView: NativeSettingsForm(controller: self, page: page).tint(ScrimPalette.blue))
             host.preferredContentSize = NSSize(width: 640, height: 540)
             let item = NSTabViewItem(viewController: host)
             item.label = page.title; item.image = NSImage(systemSymbolName: page.symbol, accessibilityDescription: page.title)

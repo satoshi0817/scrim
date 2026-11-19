@@ -23,7 +23,7 @@ final class GesturePermissionView: NSView {
             if state == .denied { text(unavailable ? "入力監視を開始できません。⌃⌥P で使えます。" : GestureCopy.denied, y: 80, height: 32) }
             let primary = ActionButton(state == .denied ? "システム設定を開く" : GestureCopy.allow) { if state == .denied { openSettings?() } else { allow?() } }
             primaryButton = primary
-            primary.keyEquivalent = "\r"; primary.bezelColor = .controlAccentColor
+            primary.keyEquivalent = "\r"; primary.bezelColor = ScrimPalette.nativeBlue
             primary.frame = NSRect(x: 24, y: 28, width: 230, height: 32); addSubview(primary)
             let secondary = ActionButton(GestureCopy.later) { later?() }
             secondary.keyEquivalent = ""; secondary.bezelColor = nil

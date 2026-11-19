@@ -128,6 +128,7 @@ struct WidgetPanelView: View {
                 case .upcoming: UpcomingEventsView(model: model.upcoming, now: model.now, size: geometry.size, editing: model.isEditing)
                 }
             }
+            .tint(ScrimPalette.blue)
             .padding(model.spec.kind == .upcoming ? 0 : model.spec.kind == .weather ? min(24, min(geometry.size.width, geometry.size.height) * 0.075) : compact ? 16 : 24)
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
@@ -197,7 +198,7 @@ struct WidgetPanelView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(time(start, format: "M月")).font(.system(size: 14, weight: .semibold)).foregroundStyle(.red)
+                    Text(time(start, format: "M月")).font(.system(size: 14, weight: .semibold)).foregroundStyle(ScrimPalette.red)
                     Text(time(model.now, format: "d")).font(.system(size: size.height < 260 ? 32 : 48, weight: .light, design: .rounded))
                 }
                 Spacer(minLength: 0)
@@ -208,7 +209,7 @@ struct WidgetPanelView: View {
             Grid(horizontalSpacing: 0, verticalSpacing: 0) {
                 GridRow {
                     ForEach(Array(["日", "月", "火", "水", "木", "金", "土"].enumerated()), id: \.offset) { index, value in
-                        Text(value).font(.caption).foregroundStyle(index == 0 ? Color.red : .secondary).frame(maxWidth: .infinity).frame(height: size.height < 260 ? 20 : 24)
+                        Text(value).font(.caption).foregroundStyle(index == 0 ? ScrimPalette.red : .secondary).frame(maxWidth: .infinity).frame(height: size.height < 260 ? 20 : 24)
                     }
                 }
                 ForEach(0..<6) { row in
@@ -218,9 +219,9 @@ struct WidgetPanelView: View {
                             let isToday = day > 0 && day <= count && calendar.isDate(calendar.date(byAdding: .day, value: day-1, to: start)!, inSameDayAs: model.now)
                             Text(day > 0 && day <= count ? String(day) : " ")
                                 .font(.system(size: min(18, max(11, cellHeight*0.45)), weight: isToday ? .semibold : .regular, design: .rounded))
-                                .foregroundStyle(isToday ? Color.white : column == 0 ? .red : .primary)
+                                .foregroundStyle(isToday ? Color.white : column == 0 ? ScrimPalette.red : .primary)
                                 .frame(maxWidth: .infinity).frame(height: cellHeight)
-                                .background { if isToday { Circle().fill(Color.red).frame(width: min(32, cellHeight-1), height: min(32, cellHeight-1)) } }
+                                .background { if isToday { Circle().fill(ScrimPalette.red).frame(width: min(32, cellHeight-1), height: min(32, cellHeight-1)) } }
                                 .accessibilityLabel(day > 0 && day <= count ? "\(day)日"+(isToday ? " 今日" : "") : "")
                         }
                     }
@@ -251,7 +252,7 @@ struct WidgetPanelView: View {
                     }
                     Spacer()
                     Image(systemName: weather.days.first?.symbol ?? "cloud.fill")
-                        .symbolRenderingMode(.multicolor).font(.system(size: min(64, min(size.width * 0.22, size.height * 0.26))))
+                        .symbolRenderingMode(.palette).foregroundStyle(.white, ScrimPalette.amber, ScrimPalette.blue).font(.system(size: min(64, min(size.width * 0.22, size.height * 0.26))))
                         .accessibilityLabel(weather.days.first?.description ?? "天気")
                 }
                 if let today = weather.days.first {
@@ -267,7 +268,7 @@ struct WidgetPanelView: View {
                         ForEach(Array(weather.days.prefix(4).enumerated()), id: \.offset) { _, day in
                             VStack(spacing: 6) {
                                 Text(time(day.date, format: "E", zone: TimeZone(identifier: "Asia/Tokyo")!)).font(.caption)
-                                Image(systemName: day.symbol).symbolRenderingMode(.multicolor).font(.title3).accessibilityLabel(day.description)
+                                Image(systemName: day.symbol).symbolRenderingMode(.palette).foregroundStyle(.white, ScrimPalette.amber, ScrimPalette.blue).font(.title3).accessibilityLabel(day.description)
                                 Text(day.high.flatMap { high in day.low.map { "\(high)° / \($0)°" } } ?? "—").font(.caption2)
                             }.frame(maxWidth: .infinity)
                         }
@@ -281,7 +282,7 @@ struct WidgetPanelView: View {
                 }.font(.caption2).opacity(0.75)
             } else {
                 Spacer(minLength: 0)
-                if size.height >= 220 { Image(systemName: "cloud.sun.fill").symbolRenderingMode(.multicolor).font(.system(size: compact ? 32 : 54)) }
+                if size.height >= 220 { Image(systemName: "cloud.sun.fill").symbolRenderingMode(.palette).foregroundStyle(.white, ScrimPalette.amber, ScrimPalette.blue).font(.system(size: compact ? 32 : 54)) }
                 Text(model.error ?? "東京の天気を取得しています").font(.callout)
                 if model.error != nil { Button("再試行") { model.refresh(force: true) }.buttonStyle(.bordered) }
                 Spacer(minLength: 0)
@@ -304,7 +305,7 @@ struct WidgetPanelView: View {
                         ForEach(model.hourly.filter { $0.date >= model.now }.prefix(count)) { hour in
                             VStack(spacing: min(5, height * 0.02)) {
                                 Text(time(hour.date, format: "H時", zone: TimeZone(identifier: "Asia/Tokyo")!)).font(.caption)
-                                Image(systemName: hour.symbol).symbolRenderingMode(.multicolor).font(.system(size: min(20, height * 0.15)))
+                                Image(systemName: hour.symbol).symbolRenderingMode(.palette).foregroundStyle(.white, ScrimPalette.amber, ScrimPalette.blue).font(.system(size: min(20, height * 0.15)))
                                 Text(String(format: "%.0f°", hour.temperature)).font(.system(size: 14, weight: .medium))
                                 if height >= 130 { Text(hour.precipitationProbability.map { "雨 \($0)%" } ?? "—").font(.caption2).opacity(0.85) }
                             }
@@ -320,8 +321,8 @@ struct WidgetPanelView: View {
     @Environment(\.colorScheme) private var colorScheme
     private var weatherBackground: LinearGradient {
         let colors = colorScheme == .dark
-            ? [Color(red: 0.09, green: 0.22, blue: 0.39), Color(red: 0.12, green: 0.34, blue: 0.49)]
-            : [Color(red: 0.18, green: 0.51, blue: 0.83), Color(red: 0.35, green: 0.67, blue: 0.91)]
+            ? [ScrimPalette.mix(ScrimPalette.nativeBlue, .black, 0.72), ScrimPalette.mix(ScrimPalette.nativeBlue, .black, 0.50)]
+            : [ScrimPalette.button, ScrimPalette.mix(ScrimPalette.nativeBlue, .black, 0.14)]
         return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     private func wideWeather(size: CGSize) -> some View {
@@ -369,9 +370,9 @@ private struct AnalogClockFace: View {
                 }
                 hand(length: side * 0.25, width: side * 0.025, angle: hours * 30)
                 hand(length: side * 0.36, width: side * 0.018, angle: minutes * 6)
-                Capsule().fill(Color.orange).frame(width: max(1, side * 0.008), height: side * 0.46)
+                Capsule().fill(ScrimPalette.amber).frame(width: max(1, side * 0.008), height: side * 0.46)
                     .offset(y: -side * 0.15).rotationEffect(.degrees(seconds * 6))
-                Circle().fill(Color.orange).frame(width: side * 0.04, height: side * 0.04)
+                Circle().fill(ScrimPalette.amber).frame(width: side * 0.04, height: side * 0.04)
             }
             .frame(width: side, height: side)
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)

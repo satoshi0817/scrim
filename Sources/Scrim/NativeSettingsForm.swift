@@ -58,7 +58,7 @@ struct NativeSettingsForm: View {
                     Text(LoginItemSettingsModel.approvalText).font(.callout).foregroundStyle(.secondary)
                 }
                 if let error = controller.loginModel.errorText {
-                    Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.red)
+                    Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(ScrimPalette.red)
                 }
                 if controller.loginModel.showsSettings {
                     Button(LoginItemSettingsModel.settingsTitle) { controller.loginModel.openSettings() }
@@ -189,7 +189,8 @@ struct NativeSettingsForm: View {
                     Stepper("\(store.notchLimitHours)時間以上の予定は表示しない", value: notchBinding(\.notchLimitHours), in: 1...24)
                     Toggle("Meet・Zoomリンクのある予定のみ", isOn: notchBinding(\.notchOnlineOnly))
                 }
-            } header: { Text("ノッチの会議タイマー") } footer: {
+                NotchSettingsPreview()
+            } header: { Text("ノッチの予定タイマー") } footer: {
                 Text("「次の予定」に表示される時刻付きの予定が対象です。予定カードの右クリックで、その回だけ非表示にできます。")
             }.toggleStyle(.switch)
             Section {

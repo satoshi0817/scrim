@@ -7,7 +7,7 @@ Scrim is a macOS menu bar app that overlays your calendar, clocks, and web pages
 ## Getting started
 
 1. Launch Scrim and select **レイアウトを編集…** (Edit Layout) from its menu bar menu.
-2. Choose **パネルを追加** (Add Panel), pick a widget or page, and drag it into place. Drag its edges to resize it. Choose **完了** (Done) to return to normal viewing.
+2. Choose **パネルを追加** (Add Panel), then click a card or drag it directly from the gallery onto the canvas. New panels start two columns wide and one row high. Nearby panels move or shrink during the drag to show where the new panel will fit. Drag an edge to resize and release to snap to the grid. Choose **完了** (Done) to return to normal viewing.
 3. Double-tap Command to pin the overlay, or hold the second press for a temporary peek. The gesture requires macOS Input Monitoring permission. While pinned, use Command-comma to choose settings or layout editing, or Command-Shift-E to toggle editing directly. Press Escape in viewing mode or switch apps to dismiss Scrim.
 
 ## Panels
@@ -20,6 +20,10 @@ Scrim is a macOS menu bar app that overlays your calendar, clocks, and web pages
 | Web, Notion, and files | Add a website, a Notion database view, a PDF, a text note, or a local HTML page with its images and stylesheets. |
 
 Settings control appearance, interaction during a peek, and per-display layouts. With an upcoming-events panel configured, supported Macs can show a countdown for accepted events beside the display notch.
+
+In Upcoming Events, a blue check marks accepted invitations and an amber question mark marks unanswered ones. The card background takes on a warm tint 30 minutes before an event and turns redder as the start approaches. A thin, translucent scrollbar overlays the cards while you scroll.
+
+To preview the notch without a calendar event, open **Settings → Panels → ノッチの予定タイマー → 表示を試す** (Try Preview). Switch between upcoming and ongoing events and move the remaining-time slider to see the countdown colors change.
 
 ## Build from source
 

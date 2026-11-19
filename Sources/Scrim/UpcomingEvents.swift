@@ -178,7 +178,7 @@ enum AgendaPresentation {
         calendars = available.map { calendar in
             CalendarOption(id: calendar.calendarIdentifier, title: calendar.title,
                            accountID: calendar.source.sourceIdentifier, accountTitle: calendar.source.title,
-                           color: calendar.cgColor.flatMap(NSColor.init(cgColor:)) ?? .systemBlue)
+                           color: calendar.cgColor.flatMap(NSColor.init(cgColor:)) ?? ScrimPalette.nativeBlue)
         }.sorted { ($0.accountTitle, $0.title, $0.id) < ($1.accountTitle, $1.title, $1.id) }
         let selected = available.filter { isSelected($0.calendarIdentifier) }
         // Passing an empty array to EventKit can mean "all"; never query in that case.
@@ -190,7 +190,7 @@ enum AgendaPresentation {
             .map { event in
                 UpcomingEvent(id: event.calendar.calendarIdentifier + ":" + (event.eventIdentifier ?? event.calendarItemIdentifier) + ":" + String(event.startDate.timeIntervalSince1970), title: event.title ?? "名称未設定", start: event.startDate,
                               end: event.endDate, allDay: event.isAllDay, location: event.location,
-                              color: event.calendar.cgColor.flatMap(NSColor.init(cgColor:)) ?? .systemBlue, attendance: AgendaAttendance(event: event), calendarID: event.calendar.calendarIdentifier,
+                              color: event.calendar.cgColor.flatMap(NSColor.init(cgColor:)) ?? ScrimPalette.nativeBlue, attendance: AgendaAttendance(event: event), calendarID: event.calendar.calendarIdentifier,
                               meetingURL: MeetingLink.find(in: [event.url?.absoluteString, event.location, event.notes]),
                               links: EventLinks.extract(in: [event.url?.absoluteString, event.location, event.notes]), notes: EventLinks.notes(event.notes))
             }
@@ -276,7 +276,7 @@ struct UpcomingEventsView: View {
                                 } header: {
                                     HStack(alignment: .firstTextBaseline) {
                                         if Calendar.current.isDate(day.date, inSameDayAs: now) {
-                                            Circle().fill(Color.red).frame(width: 5, height: 5).offset(y: -3)
+                                            Circle().fill(ScrimPalette.red).frame(width: 5, height: 5).offset(y: -3)
                                         }
                                         Text(dayTitle(day.date)).font(.system(size: 13, weight: .semibold))
                                         Spacer(minLength: 4)
@@ -409,7 +409,7 @@ struct UpcomingEventsView: View {
     private func countdownTint(_ event: UpcomingEvent) -> Color {
         guard let minutes = AgendaPresentation.minutesUntilStart(event, now: now), minutes <= 30 else { return .clear }
         let progress = Double(30 - minutes) / 29
-        return Color(red: 1, green: 0.68 - 0.48 * progress, blue: 0.16)
+        return ScrimPalette.mix(ScrimPalette.nativeAmber, ScrimPalette.nativeRed, progress)
             .opacity(0.05 + 0.20 * progress)
     }
 
@@ -425,12 +425,12 @@ struct UpcomingEventsView: View {
             if showsJoin, imminent, let link = event.meetingLinks.first {
                 Button { model.openMeeting(link.url) } label: {
                     Label("参加", systemImage: "video.fill").font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white).padding(.horizontal, 10).padding(.vertical, 8)
-                        .background(Capsule().fill(link.meetingService == "Zoom" ? Color.blue : Color(red: 0.08, green: 0.46, blue: 0.29)))
+                        .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Capsule().fill(ScrimPalette.button))
                 }.buttonStyle(.plain).modifier(HandCursor()).help((link.meetingService ?? "会議") + "を外部ブラウザで開く")
             }
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 13).fill(Color.accentColor.opacity(0.065)).overlay(RoundedRectangle(cornerRadius: 13).fill(countdownTint(event))))
+            .background(RoundedRectangle(cornerRadius: 13).fill(ScrimPalette.blue.opacity(0.065)).overlay(RoundedRectangle(cornerRadius: 13).fill(countdownTint(event))))
     }
     private func dayTitle(_ date: Date) -> String {
         let calendar = Calendar.current
@@ -438,6 +438,21 @@ struct UpcomingEventsView: View {
         if calendar.isDate(date, inSameDayAs: calendar.date(byAdding: .day, value: 1, to: now)!) { return "明日の予定" }
         return date.formatted(.dateTime.month().day()) + "の予定"
     }
+    @ViewBuilder private func attendanceBadge(_ status: AgendaAttendance) -> some View {
+        if status == .accepted || status == .pending {
+            let accepted = status == .accepted
+            let ink = ScrimPalette.badge(accepted: accepted, dark: colorScheme == .dark)
+            Label(status.rawValue, systemImage: accepted ? "checkmark.circle.fill" : "questionmark.circle")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ink)
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(ink.opacity(colorScheme == .dark ? 0.13 : 0.09), in: Capsule())
+                .fixedSize().accessibilityLabel("出欠・" + status.rawValue)
+        } else {
+            Text(status.rawValue).accessibilityLabel("出欠・" + status.rawValue)
+        }
+    }
+
     private func eventRow(_ event: UpcomingEvent, featured: Bool) -> some View {
         let hiddenMeetings = featured ? [] : event.meetingLinks
         let detailCount = hiddenMeetings.count + event.otherLinks.count
@@ -448,7 +463,7 @@ struct UpcomingEventsView: View {
             HStack {
                 Text(max(event.start, Calendar.current.startOfDay(for: now)).formatted(.dateTime.month().day().weekday()))
                 Spacer()
-                Text(event.attendance.rawValue).accessibilityLabel("出欠・" + event.attendance.rawValue)
+                attendanceBadge(event.attendance)
             }.font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 eventTimeDisplay(event)
@@ -459,7 +474,7 @@ struct UpcomingEventsView: View {
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(Capsule().fill(Color.primary.opacity(0.05)))
                 } else if ongoing {
-                    Label("進行中", systemImage: "circle.fill").font(.system(size: 10, weight: .medium)).foregroundStyle(.green)
+                    Label("進行中", systemImage: "circle.fill").font(.system(size: 10, weight: .medium)).foregroundStyle(ScrimPalette.badge(accepted: true, dark: colorScheme == .dark))
                 } else if ended {
                     Text("終了").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
                 }
@@ -588,11 +603,11 @@ private struct AgendaLinkButton: View {
     let action: () -> Void
     @State private var hovering = false
     private var tint: Color {
-        link.meetingService == "Zoom" ? Color(red: 0.12, green: 0.39, blue: 0.83) : Color(red: 0.08, green: 0.46, blue: 0.29)
+        ScrimPalette.button
     }
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: primary ? 4 : 8) {
                 if link.isNotion && link.host != "calendar.notion.com" {
                     Text("N").font(.system(size: 14, weight: .bold, design: .serif)).frame(width: 20, height: 20)
                         .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.07)))
@@ -611,7 +626,7 @@ private struct AgendaLinkButton: View {
                 Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold)).opacity(primary ? 0.85 : 0.5)
             }
             .foregroundStyle(primary ? Color.white : .primary)
-            .padding(.horizontal, 12).padding(.vertical, primary ? 9 : 8)
+            .padding(.horizontal, primary ? 8 : 12).padding(.vertical, primary ? 4 : 8)
             .frame(maxWidth: primary ? nil : .infinity, alignment: .leading)
             .background {
                 if primary {
@@ -629,6 +644,18 @@ private struct AgendaLinkButton: View {
 }
 
 private struct AgendaScrollStyle: NSViewRepresentable {
+    final class Indicator: NSScroller {
+        override class var isCompatibleWithOverlayScrollers: Bool { true }
+        override func drawKnob() {
+            let slot = rect(for: .knob)
+            guard slot.height > 0 else { return }
+            let width = min(3, slot.width)
+            let thumb = NSRect(x: slot.midX - width / 2, y: slot.minY, width: width, height: slot.height)
+            NSColor.labelColor.withAlphaComponent(0.23).setFill()
+            NSBezierPath(roundedRect: thumb, xRadius: width / 2, yRadius: width / 2).fill()
+        }
+        override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+    }
     final class Marker: NSView {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -636,6 +663,9 @@ private struct AgendaScrollStyle: NSViewRepresentable {
         }
         func apply() {
             guard let scroll = enclosingScrollView else { return }
+            if let current = scroll.verticalScroller, !(current is Indicator) {
+                scroll.verticalScroller = Indicator(frame: current.frame)
+            }
             scroll.scrollerStyle = .overlay
             scroll.autohidesScrollers = true
             scroll.verticalScroller?.controlSize = .small

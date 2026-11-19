@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PanelGallery: View {
     let choose: (Int) -> Void
+    let drag: (Int, Bool) -> Void
     let close: () -> Void
     private struct Entry: Identifiable {
         let id: Int
@@ -14,20 +15,20 @@ struct PanelGallery: View {
         }
     }
     private let widgets = [
-        Entry(15,"電卓","四則演算・符号変更・パーセント","plus.forwardslash.minus",.orange),
-        Entry(13,"次の予定","予定一覧と開始までの残り時間","calendar.badge.clock",.red),
-        Entry(10,"東京の天気","気温と3時間ごとの予報","cloud.sun.fill",.blue),
-        Entry(11,"時計","アナログまたはデジタルの時計","clock.fill",.indigo),
-        Entry(14,"世界時計","都市ごとの時刻と勤務時間","globe",.teal),
-        Entry(12,"月間カレンダー","今月の日付と曜日をひと目で確認","calendar",.pink)
+        Entry(15,"電卓","四則演算・符号変更・パーセント","plus.forwardslash.minus",ScrimPalette.amber),
+        Entry(13,"次の予定","予定一覧と開始までの残り時間","calendar.badge.clock",ScrimPalette.red),
+        Entry(10,"東京の天気","気温と3時間ごとの予報","cloud.sun.fill",ScrimPalette.blue),
+        Entry(11,"時計","アナログまたはデジタルの時計","clock.fill",ScrimPalette.button),
+        Entry(14,"世界時計","都市ごとの時刻と勤務時間","globe",ScrimPalette.button),
+        Entry(12,"月間カレンダー","今月の日付と曜日をひと目で確認","calendar",ScrimPalette.red)
     ]
     private let content = [
-        Entry(0,"ウェブページ","URLを指定してサイトを表示","safari.fill",.blue),
+        Entry(0,"ウェブページ","URLを指定してサイトを表示","safari.fill",ScrimPalette.blue),
         Entry(5,"Notionビュー","データベースのビューを表示","tablecells.fill",.secondary),
-        Entry(1,"テキスト","入力したメモや文章を表示","text.alignleft",.mint),
-        Entry(2,"HTML","入力したHTMLをページとして表示","chevron.left.forwardslash.chevron.right",.purple),
-        Entry(3,"ファイル","PDF・テキスト・HTMLを開く","doc.fill",.cyan),
-        Entry(4,"HTMLを取り込む","画像やCSSを含むページを保存","folder.fill",.orange)
+        Entry(1,"テキスト","入力したメモや文章を表示","text.alignleft",ScrimPalette.amber),
+        Entry(2,"HTML","入力したHTMLをページとして表示","chevron.left.forwardslash.chevron.right",ScrimPalette.button),
+        Entry(3,"ファイル","PDF・テキスト・HTMLを開く","doc.fill",ScrimPalette.blue),
+        Entry(4,"HTMLを取り込む","画像やCSSを含むページを保存","folder.fill",ScrimPalette.amber)
     ]
     private func previewText(for entry: Entry) -> String? {
         switch entry.id {
@@ -44,6 +45,7 @@ struct PanelGallery: View {
     var body: some View {
         VStack(spacing: 12) {
             HStack { Text("パネルを追加").font(.title2.bold()); Spacer(); Button(action: close) { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).accessibilityLabel("閉じる") }
+            Text("クリックして追加、または配置したい場所にドラッグ").font(.callout).foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     section("ウィジェット", widgets)
@@ -64,7 +66,7 @@ struct PanelGallery: View {
                                 if let sample = previewText(for: entry) {
                                     Text(sample).font(.caption.weight(.semibold)).monospacedDigit()
                                 }
-                            }.foregroundStyle(.white).accessibilityHidden(true)
+                            }.foregroundStyle(entry.color == ScrimPalette.amber ? Color.black : .white).accessibilityHidden(true)
                                 .frame(maxWidth: .infinity).frame(height: 44)
                                 .background(entry.color.gradient, in: RoundedRectangle(cornerRadius: 8))
                             Text(entry.title).font(.headline)
@@ -73,6 +75,9 @@ struct PanelGallery: View {
                         .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain)
+                    .highPriorityGesture(DragGesture(minimumDistance: 5, coordinateSpace: .global)
+                        .onChanged { _ in drag(entry.id, false) }
+                        .onEnded { _ in drag(entry.id, true) })
                 }
             }
         }

@@ -111,12 +111,10 @@ private struct NotchWings: View, Equatable {
     let wingWidth: CGFloat = 52
     private var minutes: Int { (seconds + 59) / 60 }
     private var tint: Color {
-        // Cool mint at ten minutes, amber at five, coral at the boundary.
-        let stops = [(0.0, 1.0, 0.33, 0.31), (300.0, 1.0, 0.76, 0.32), (600.0, 0.46, 0.90, 0.82)]
-        let lower = seconds < 300 ? stops[0] : stops[1]
-        let upper = seconds < 300 ? stops[1] : stops[2]
-        let t = min(1, max(0, (Double(seconds) - lower.0) / (upper.0 - lower.0)))
-        return Color(red: lower.1 + t * (upper.1 - lower.1), green: lower.2 + t * (upper.2 - lower.2), blue: lower.3 + t * (upper.3 - lower.3))
+        if seconds < 300 {
+            return ScrimPalette.mix(ScrimPalette.nativeRed, ScrimPalette.nativeAmber, CGFloat(seconds) / 300)
+        }
+        return ScrimPalette.mix(ScrimPalette.nativeAmber, ScrimPalette.nativeBlue, CGFloat(seconds - 300) / 300)
     }
     var body: some View {
         HStack(spacing: 0) {
@@ -141,6 +139,37 @@ private struct NotchWings: View, Equatable {
             .accessibilityLabel(time + "、" + action)
         } else {
             label.accessibilityLabel(time)
+        }
+    }
+}
+
+struct NotchSettingsPreview: View {
+    @State private var ongoing = false
+    @State private var minutes = 5.0
+    var body: some View {
+        DisclosureGroup("表示を試す") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Spacer(minLength: 0)
+                    NotchWings(meetingURL: nil, endsAt: .distantFuture, ongoing: ongoing,
+                               seconds: Int(minutes) * 60, notchWidth: 108)
+                        .frame(width: 212, height: 30)
+                    Spacer(minLength: 0)
+                }
+                .frame(height: 54, alignment: .top)
+                .background(ScrimPalette.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+                Picker("予定の状態", selection: $ongoing) {
+                    Text("開始前").tag(false)
+                    Text("進行中").tag(true)
+                }.pickerStyle(.segmented)
+                HStack {
+                    Text(ongoing ? "終了まで" : "開始まで").font(.caption)
+                    Slider(value: $minutes, in: 1...15, step: 1)
+                        .accessibilityLabel("プレビューの残り時間")
+                        .accessibilityValue("\(Int(minutes))分")
+                    Text("\(Int(minutes))分").monospacedDigit().frame(width: 36, alignment: .trailing)
+                }
+            }.padding(.vertical, 6)
         }
     }
 }

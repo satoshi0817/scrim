@@ -80,9 +80,9 @@ struct CalculatorWidget: View {
                             let op = ["÷","×","−","+","="].contains(key)
                             Button { focused = true; calc.press(key) } label: {
                                 Text(key).font(.system(size: min(22, max(12,geometry.size.height * 0.09)), weight: .medium))
-                                    .foregroundStyle(op ? Color.white : .primary)
+                                    .foregroundStyle(op ? Color.black : .primary)
                                     .frame(width: key == "0" ? w*2+gap : w).frame(maxHeight: .infinity)
-                                    .background(op ? Color.orange : Color.primary.opacity(row == keys[0] ? 0.21 : 0.11), in: Capsule())
+                                    .background(op ? ScrimPalette.amber : Color.primary.opacity(row == keys[0] ? 0.21 : 0.11), in: Capsule())
                                     .contentShape(Capsule())
                             }.buttonStyle(.plain)
                         }

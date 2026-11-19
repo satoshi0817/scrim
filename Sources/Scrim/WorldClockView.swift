@@ -96,7 +96,7 @@ struct WorldClockView: View {
             let w = size.width / CGFloat(active.count)
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.secondary.opacity(0.15)))
             for index in active.indices where active[index] {
-                context.fill(Path(CGRect(x: CGFloat(index)*w, y: 0, width: w+0.3, height: size.height)), with: .color(.teal))
+                context.fill(Path(CGRect(x: CGFloat(index)*w, y: 0, width: w+0.3, height: size.height)), with: .color(ScrimPalette.blue))
             }
             let x = size.width * instant.timeIntervalSince(day.start) / day.duration
             context.fill(Path(CGRect(x: min(x,size.width-2), y: 0, width: 2, height: size.height)), with: .color(.primary))

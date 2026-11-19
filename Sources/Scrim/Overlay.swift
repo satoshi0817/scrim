@@ -41,6 +41,27 @@ final class Backdrop: NSView {
     }
     override func mouseDown(with event: NSEvent) { dismiss?() }
 }
+private extension NSView {
+    /// Commit geometry immediately so hit testing and saved frames always use the destination.
+    func settleFrame(_ destination: CGRect) {
+        guard frame != destination else { return }
+        let start = layer?.presentation()?.frame ?? frame
+        frame = destination
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let layer,
+              start.width > 0, start.height > 0, destination.width > 0, destination.height > 0 else { return }
+        let anchor = layer.anchorPoint
+        let dx = start.minX - destination.minX + anchor.x * (start.width - destination.width)
+        let dy = start.minY - destination.minY + anchor.y * (start.height - destination.height)
+        let motion = CABasicAnimation(keyPath: "transform")
+        motion.fromValue = CATransform3DScale(CATransform3DMakeTranslation(dx, dy, 0),
+                                              start.width / destination.width, start.height / destination.height, 1)
+        motion.toValue = CATransform3DIdentity
+        motion.duration = 0.16
+        motion.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(motion, forKey: "layoutSettle")
+    }
+}
+
 final class PanelView: NSView, WKNavigationDelegate {
     let id: UUID
     var url: URL
@@ -103,7 +124,7 @@ final class PanelView: NSView, WKNavigationDelegate {
         spinner.style = .spinning; spinner.isDisplayedWhenStopped = false; addSubview(spinner)
         if preview {
             let content = NSView(); content.wantsLayer = true
-            content.layer?.backgroundColor = NSColor(calibratedRed: 0.25, green: 0.34, blue: 0.39, alpha: 1).cgColor
+            content.layer?.backgroundColor = NSColor(white: 0.25, alpha: 1).cgColor
             let placeholder = label("ひと息つくための、小さな窓", size: 20)
             placeholder.usesSingleLineMode = false; placeholder.maximumNumberOfLines = 0
             placeholder.lineBreakMode = .byWordWrapping; placeholder.cell?.wraps = true
@@ -186,14 +207,14 @@ final class PanelView: NSView, WKNavigationDelegate {
         editing = value; moving = false; edges = 0
         widgetPanel?.setEditing(value)
         layer?.borderWidth = value ? 3 : 0
-        layer?.borderColor = NSColor.controlAccentColor.cgColor; needsDisplay = true
+        layer?.borderColor = ScrimPalette.nativeBlue.cgColor; needsDisplay = true
         window?.invalidateCursorRects(for: self)
         applyVisibility(visibility)
     }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         if editing {
-            NSColor.controlAccentColor.setFill()
+            ScrimPalette.nativeBlue.setFill()
             for x in [CGFloat(0), bounds.width-10] {
                 for y in [CGFloat(0), bounds.height-10] { NSRect(x: x, y: y, width: 10, height: 10).fill() }
             }
@@ -430,7 +451,7 @@ final class PanelView: NSView, WKNavigationDelegate {
     }
     override func mouseDown(with event: NSEvent) {
         guard editing else { touched?(); return }
-        touched?(); origin = event.locationInWindow; original = frame
+        dropFrame = nil; touched?(); origin = event.locationInWindow; original = frame
         let p = convert(event.locationInWindow, from: nil)
         edges = (p.x < 7 ? 1 : 0) | (p.x > bounds.width-7 ? 2 : 0) | (p.y < 7 ? 4 : 0) | (p.y > bounds.height-7 ? 8 : 0)
         moving = edges == 0
@@ -445,20 +466,31 @@ final class PanelView: NSView, WKNavigationDelegate {
             addCursorRect(NSRect(x: 0, y: y, width: bounds.width, height: 7), cursor: .resizeUpDown)
         }
     }
+    private var dropFrame: CGRect?
     override func mouseDragged(with event: NSEvent) {
         guard editing else { return }
         let dx = event.locationInWindow.x-origin.x, dy = event.locationInWindow.y-origin.y
         var r = original
         if moving { r.origin.x += dx; r.origin.y += dy }
         else {
-            if edges & 1 != 0 { let d = min(dx, original.width-240); r.origin.x += d; r.size.width -= d }
-            if edges & 2 != 0 { r.size.width = max(240, original.width+dx) }
-            if edges & 4 != 0 { let d = min(dy, original.height-160); r.origin.y += d; r.size.height -= d }
-            if edges & 8 != 0 { r.size.height = max(160, original.height+dy) }
+            if edges & 1 != 0 { let d = min(dx, original.width-1); r.origin.x += d; r.size.width -= d }
+            if edges & 2 != 0 { r.size.width = max(1, original.width+dx) }
+            if edges & 4 != 0 { let d = min(dy, original.height-1); r.origin.y += d; r.size.height -= d }
+            if edges & 8 != 0 { r.size.height = max(1, original.height+dy) }
         }
-        if moving || edges != 0 { frame = constrain?(r) ?? r; needsLayout = true }
+        if moving || edges != 0 {
+            dropFrame = constrain?(r) ?? r
+            layer?.removeAnimation(forKey: "layoutSettle")
+            frame = r
+            needsLayout = true
+        }
     }
-    override func mouseUp(with event: NSEvent) { if editing && (moving || edges != 0) { changed?() }; moving = false; edges = 0 }
+    override func mouseUp(with event: NSEvent) {
+        if editing, let dropFrame { settleFrame(dropFrame); changed?() }
+        dropFrame = nil
+        moving = false
+        edges = 0
+    }
     deinit { browser.closeAll() }
 }
 
@@ -485,7 +517,16 @@ final class OverlayController {
     private var showingGallery = false
     var showingActions: Bool { dialog != nil && embeddedSettings == nil && !showingGallery }
     private weak var previousResponder: NSResponder?
+    private var galleryDrag: (originals: [UUID: CGRect], marker: NSView)?
+    private func clearGalleryDrag() {
+        guard let drag = galleryDrag else { return }
+        galleryDrag = nil
+        drag.marker.removeFromSuperview()
+        for (id, frame) in drag.originals { views[id]?.settleFrame(frame) }
+        dialog?.alphaValue = 1
+    }
     func closeDialog() {
+        clearGalleryDrag()
         guard let dialog else { return }
         embeddedSettings?.finishEmbedded()
         embeddedSettings = nil
@@ -501,7 +542,7 @@ final class OverlayController {
         shield.wantsLayer = true
         shield.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.32).cgColor
         shield.close = { [weak self] in self?.closeDialog() }
-        let host = NSHostingView(rootView: content)
+        let host = NSHostingView(rootView: content.tint(ScrimPalette.blue))
         let w = min(size.width, root.bounds.width - 24), h = min(size.height, root.bounds.height - 24)
         host.frame = NSRect(x: (root.bounds.width-w)/2, y: (root.bounds.height-h)/2, width: w, height: h)
         host.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
@@ -732,12 +773,35 @@ final class OverlayController {
     func setEditing(_ value: Bool) {
         closeDialog()
         editing = value && state == .pinned
+        if !editing { placementPreview = nil }
         root.editing = editing
         for view in views.values {
             view.setEditing(editing)
         }
         layoutChrome()
     }
+    private var placementPreview: (id: UUID, originals: [UUID: CGRect], last: CGRect?)?
+
+    private func previewPlacement(_ id: UUID, target: CGRect) -> CGRect {
+        if placementPreview?.id != id {
+            placementPreview = (id, views.mapValues { $0.frame }, nil)
+        }
+        let packing = PanelPacking(screen: root.bounds.size)
+        let snapped = packing.snapped(target)
+        if placementPreview?.last == snapped { return snapped }
+        let ids = records.map(\.id).filter { $0 != id }
+        guard let original = placementPreview?.originals,
+              ids.allSatisfy({ original[$0] != nil }),
+              let fit = packing.layout(target: snapped, others: ids.compactMap { original[$0] }) else {
+            return placementPreview?.last ?? views[id]?.frame ?? target
+        }
+        for (other, frame) in zip(ids, fit.others) where views[other]?.frame != frame {
+            views[other]?.settleFrame(frame)
+        }
+        placementPreview?.last = fit.target
+        return fit.target
+    }
+
     private func install(_ record: PanelRecord) {
         let view = PanelView(record: record, websiteDataStore: websiteDataStore, fileReadAccessRoot: documentStorage.resourceRoot(for: record.url), weatherProvider: weatherProvider); views[record.id] = view; root.addSubview(view)
         view.browser.hideFromScreenCapture = store.hideFromScreenCapture
@@ -748,14 +812,14 @@ final class OverlayController {
         view.canEditContent = documentStorage.owns(record.url)
         view.frame = record.placement.restore(screen: root.bounds.size)
         view.touched = { [weak self] in self?.touch(record.id) }
-        view.changed = { [weak self] in self?.saveFrames() }
+        view.changed = { [weak self] in self?.placementPreview = nil; self?.saveFrames() }
         view.openedExternalMeeting = { [weak self] in self?.onDismiss?() }
         view.didSleep = { [weak self] in self?.reconcile() }
         view.navigated = { [weak self] url in
             guard let self, let index = self.records.firstIndex(where: { $0.id == record.id }) else { return }
             self.records[index].url = url; self.persist()
         }
-        view.constrain = { [weak self] frame in guard let self else { return frame }; return Placement.constrain(frame, screen: self.root.bounds.size, others: self.views.filter { $0.key != record.id }.map { $0.value.frame }) }
+        view.constrain = { [weak self] frame in self?.previewPlacement(record.id, target: frame) ?? frame }
         view.command = { [weak self] command in
             guard let self, self.editing, let view = self.views[record.id] else { return }
             switch command {
@@ -788,31 +852,16 @@ final class OverlayController {
             let record = records.remove(at: index); records.append(record); persist()
         }
     }
-    func add(_ url: URL) {
+    func add(_ url: URL, at target: CGRect? = nil) {
         guard editing else { return }
         guard records.count < PanelPool.maximum else { NSSound.beep(); return }
-        let n = records.count % 5, grid = PanelGrid(screen: root.bounds.size)
-        let kind = WidgetSpec(url: url)?.kind
-        let rows = kind == .weather ? 4 : kind == .clock ? 2 : 3
-        var initial: CGRect?
-        for row in (0...(Placement.gridRows-rows)).reversed() {
-            for column in 0...(Placement.gridColumns-4) {
-                let candidate = Placement.constrain(grid.frame(column: column, row: row, columns: 4, rows: rows), screen: root.bounds.size)
-                if !views.values.contains(where: { candidate.insetBy(dx: -grid.gap/2, dy: -grid.gap/2).intersects($0.frame) }) {
-                    initial = candidate; break
-                }
-            }
-            if initial != nil { break }
-        }
-        let frame = initial ?? Placement.constrain(grid.frame(column: n, row: n % 4, columns: 4, rows: rows), screen: root.bounds.size)
+        let originals = views.mapValues { $0.frame }
+        let frame = target ?? PanelPacking(screen: root.bounds.size).initial(others: Array(originals.values))
         let record = PanelRecord(url: url, placement: FractionalFrame(frame: frame, screen: root.bounds.size))
         records.append(record); install(record); if WidgetSpec(url: record.url) == nil { pool.add(record.id) }
-        persist()
-        let layout = displayedLayout()
-        presentationWasFitted = !store.sameLayoutOnAllDisplays && (presentationWasFitted || LayoutFitter.needsFitting(layout: layout, screen: root.bounds.size))
-        for (entry, frame) in zip(records, presentationFrames(layout: layout, screen: root.bounds.size)) {
-            views[entry.id]?.frame = frame
-        }
+        placementPreview = (record.id, originals, nil)
+        let placed = previewPlacement(record.id, target: frame)
+        views[record.id]?.frame = placed
         reconcile(); persist(); layoutChrome()
     }
     private func addPrompt() {
@@ -821,34 +870,72 @@ final class OverlayController {
         closeDialog()
         showingGallery = true
         presentDialog(PanelGallery(choose: { [weak self] tag in
-            self?.closeDialog()
-            self?.addSource(tag)
-        }, close: { [weak self] in self?.closeDialog() }), size: NSSize(width: 720, height: 620))
+            guard let self, self.showingGallery, self.galleryDrag == nil else { return }
+            self.closeDialog()
+            self.addSource(tag)
+        }, drag: { [weak self] tag, ended in self?.dragGalleryCard(tag, ended: ended) }, close: { [weak self] in self?.closeDialog() }), size: NSSize(width: 720, height: 620))
     }
-    private func addSource(_ tag: Int) {
+    private func dragGalleryCard(_ tag: Int, ended: Bool) {
+        guard editing, showingGallery, let dialog else { return }
+        if galleryDrag == nil {
+            let marker = NSView()
+            marker.wantsLayer = true
+            marker.layer?.cornerRadius = 12
+            marker.layer?.borderWidth = 2
+            marker.layer?.borderColor = ScrimPalette.nativeBlue.cgColor
+            marker.layer?.backgroundColor = ScrimPalette.nativeBlue.withAlphaComponent(0.2).cgColor
+            root.addSubview(marker, positioned: .below, relativeTo: dialog)
+            galleryDrag = (views.mapValues { $0.frame }, marker)
+            dialog.alphaValue = 0
+        }
+        guard let drag = galleryDrag else { return }
+        let point = root.convert(panel.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        guard root.bounds.contains(point) else {
+            drag.marker.isHidden = true
+            if ended { clearGalleryDrag() }
+            return
+        }
+        drag.marker.isHidden = false
+        let grid = PanelGrid(screen: root.bounds.size)
+        var target = grid.frame(column: 0, row: 0, columns: 2, rows: 1)
+        target.origin = CGPoint(x: point.x-target.width/2, y: point.y-target.height/2)
+        let ids = records.map(\.id)
+        let packing = PanelPacking(screen: root.bounds.size)
+        if !ended, drag.marker.frame == packing.snapped(target) { return }
+        guard let fit = packing.layout(target: target, others: ids.compactMap { drag.originals[$0] }) else { clearGalleryDrag(); return }
+        if ended {
+            closeDialog()
+            addSource(tag, at: fit.target)
+        } else {
+            if drag.marker.frame.isEmpty { drag.marker.frame = fit.target } else { drag.marker.settleFrame(fit.target) }
+            for (id, frame) in zip(ids, fit.others) { views[id]?.settleFrame(frame) }
+        }
+    }
+
+    private func addSource(_ tag: Int, at target: CGRect? = nil) {
         guard editing else { return }
         switch tag {
-        case 1: documentPrompt(kind: .text)
-        case 2: documentPrompt(kind: .html)
-        case 5: addNotionViewPrompt()
-        case 4: importHTMLPrompt()
-        case 10: add(WidgetSpec(kind: .weather).url)
-        case 11: add(WidgetSpec(kind: .clock).url)
-        case 12: add(WidgetSpec(kind: .calendar).url)
-        case 15: add(WidgetSpec(kind: .calculator).url)
-        case 14: add(WidgetSpec(kind: .worldclock).url)
-        case 13: add(WidgetSpec(kind: .upcoming).url)
+        case 1: documentPrompt(kind: .text, at: target)
+        case 2: documentPrompt(kind: .html, at: target)
+        case 5: addNotionViewPrompt(at: target)
+        case 4: importHTMLPrompt(at: target)
+        case 10: add(WidgetSpec(kind: .weather).url, at: target)
+        case 11: add(WidgetSpec(kind: .clock).url, at: target)
+        case 12: add(WidgetSpec(kind: .calendar).url, at: target)
+        case 15: add(WidgetSpec(kind: .calculator).url, at: target)
+        case 14: add(WidgetSpec(kind: .worldclock).url, at: target)
+        case 13: add(WidgetSpec(kind: .upcoming).url, at: target)
         case 3:
             let picker = NSOpenPanel(); picker.canChooseDirectories = false; picker.allowsMultipleSelection = true
             picker.allowedContentTypes = [.pdf, .html, .plainText, UTType(filenameExtension: "md") ?? .plainText,
                                           UTType(filenameExtension: "log") ?? .plainText, UTType(filenameExtension: "xhtml") ?? .html]
             picker.beginSheetModal(for: panel) { [weak self] response in
-                if response == .OK { for url in picker.urls { self?.add(url) } }
+                if response == .OK { for (i, url) in picker.urls.enumerated() { self?.add(url, at: i == 0 ? target : nil) } }
             }
-        default: addWebPrompt()
+        default: addWebPrompt(at: target)
         }
     }
-    private func addNotionViewPrompt(_ previous: String = "", invalid: Bool = false) {
+    private func addNotionViewPrompt(_ previous: String = "", invalid: Bool = false, at target: CGRect? = nil) {
         let alert = NSAlert()
         alert.messageText = "Notionデータベースのビューを追加"
         alert.informativeText = invalid ? "ビューを特定できません。Notionのビュー名のメニューから「ビューのリンクをコピー」して貼り付けてください。" : "Notionで表示したいビューのリンクをコピーして貼り付けてください。"
@@ -861,16 +948,16 @@ final class OverlayController {
         alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: panel) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
-            if let url = WebPanelPolicy.notionViewURL(field.stringValue) { self?.add(url) }
-            else { DispatchQueue.main.async { self?.addNotionViewPrompt(field.stringValue, invalid: true) } }
+            if let url = WebPanelPolicy.notionViewURL(field.stringValue) { self?.add(url, at: target) }
+            else { DispatchQueue.main.async { self?.addNotionViewPrompt(field.stringValue, invalid: true, at: target) } }
         }
     }
-    private func addWebPrompt() {
+    private func addWebPrompt(at target: CGRect?) {
         let alert = NSAlert(); alert.messageText = "ウェブパネルを追加"; alert.addButton(withTitle: "追加"); alert.addButton(withTitle: "キャンセル")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24)); field.placeholderString = "https://example.com"; alert.accessoryView = field
-        alert.beginSheetModal(for: panel) { [weak self] response in if response == .alertFirstButtonReturn, let url = SettingsStore.normalize(field.stringValue) { self?.add(url) } }
+        alert.beginSheetModal(for: panel) { [weak self] response in if response == .alertFirstButtonReturn, let url = SettingsStore.normalize(field.stringValue) { self?.add(url, at: target) } }
     }
-    private func importHTMLPrompt() {
+    private func importHTMLPrompt(at target: CGRect?) {
         guard editing else { return }
         let picker = NSOpenPanel(); picker.canChooseDirectories = true; picker.canChooseFiles = true
         picker.allowedContentTypes = [.html, .folder, UTType(filenameExtension: "xhtml") ?? .html]
@@ -881,19 +968,19 @@ final class OverlayController {
             if FileManager.default.fileExists(atPath: selected.path, isDirectory: &directory), directory.boolValue {
                 let index = ["index.html", "index.htm", "index.xhtml"].map { selected.appendingPathComponent($0) }
                     .first { FileManager.default.isReadableFile(atPath: $0.path) }
-                if let index { self.importHTML(index, root: selected) }
+                if let index { self.importHTML(index, root: selected, at: target) }
                 else {
                     let entry = NSOpenPanel(); entry.canChooseDirectories = false; entry.directoryURL = selected
                     entry.allowedContentTypes = [.html, UTType(filenameExtension: "xhtml") ?? .html]
                     entry.message = "このフォルダ内で、最初に表示するHTMLを選んでください。"
                     entry.beginSheetModal(for: self.panel) { [weak self] response in
-                        if response == .OK, let file = entry.url { self?.importHTML(file, root: selected) }
+                        if response == .OK, let file = entry.url { self?.importHTML(file, root: selected, at: target) }
                     }
                 }
-            } else { self.importHTML(selected) }
+            } else { self.importHTML(selected, at: target) }
         }
     }
-    private func importHTML(_ source: URL, root: URL? = nil) {
+    private func importHTML(_ source: URL, root: URL? = nil, at target: CGRect? = nil) {
         guard editing, records.count < PanelPool.maximum else { return }
         let progress = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 100), styleMask: .titled, backing: .buffered, defer: false)
         progress.title = "HTMLを取り込み中"; progress.isReleasedWhenClosed = false
@@ -906,11 +993,11 @@ final class OverlayController {
             let result = await Task.detached { Result { try storage.importHTML(source, resourceRoot: root) } }.value
             guard let self else { return }
             self.panel.endSheet(progress); progress.close()
-            do { let imported = try result.get(); if self.editing { self.add(imported) } }
+            do { let imported = try result.get(); if self.editing { self.add(imported, at: target) } }
             catch { NSAlert(error: error).beginSheetModal(for: self.panel, completionHandler: nil) }
         }
     }
-    private func documentPrompt(kind: PanelDocumentStorage.Kind, existing: PanelView? = nil) {
+    private func documentPrompt(kind: PanelDocumentStorage.Kind, existing: PanelView? = nil, at target: CGRect? = nil) {
         guard editing else { return }
         let alert = NSAlert()
         let name = kind == .html ? "HTML" : "テキスト"
@@ -932,7 +1019,7 @@ final class OverlayController {
                     try self.documentStorage.replace(editor.string, at: existing.url); existing.reloadContent()
                 } else {
                     guard self.records.count < PanelPool.maximum else { NSSound.beep(); return }
-                    let url = try self.documentStorage.create(editor.string, kind: kind); self.add(url)
+                    let url = try self.documentStorage.create(editor.string, kind: kind); self.add(url, at: target)
                 }
             } catch { NSAlert(error: error).beginSheetModal(for: self.panel) }
         }
@@ -948,7 +1035,7 @@ final class OverlayController {
     private func displayedLayout() -> DisplayLayout {
         var displayed = records
         for i in displayed.indices {
-            if let view = views[displayed[i].id] { displayed[i].placement = FractionalFrame(frame: view.frame, screen: root.bounds.size) }
+            if let view = views[displayed[i].id] { displayed[i].placement = FractionalFrame(frame: galleryDrag?.originals[displayed[i].id] ?? view.frame, screen: root.bounds.size) }
         }
         return DisplayLayout(panels: displayed, referenceSize: root.bounds.size)
     }
