@@ -1,0 +1,970 @@
+import SwiftUI
+import AppKit
+import WebKit
+import PDFKit
+import QuartzCore
+import UniformTypeIdentifiers
+import ScrimCore
+
+func label(_ text: String, size: CGFloat = 14) -> NSTextField {
+    let v = NSTextField(labelWithString: text); v.font = .systemFont(ofSize: size); v.textColor = .white; return v
+}
+final class ActionButton: NSButton {
+    var actionBlock: (() -> Void)?
+    init(_ title: String, action: @escaping () -> Void) {
+        super.init(frame: .zero); self.title = title; bezelStyle = .rounded; target = self; self.action = #selector(run); actionBlock = action
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    @objc private func run() { actionBlock?() }
+}
+final class OverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+    var dismiss: (() -> Void)?
+    override func cancelOperation(_ sender: Any?) { dismiss?() }
+}
+final class Backdrop: NSView {
+    var dismiss: (() -> Void)?
+    var editing = false { didSet { needsDisplay = true } }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(calibratedWhite: 0.035, alpha: 0.76).setFill(); bounds.fill()
+        if editing {
+            NSColor.white.withAlphaComponent(0.35).setFill()
+            let grid = PanelGrid(screen: bounds.size), step = grid.step
+            for column in 0...Placement.gridColumns {
+                for row in 0...Placement.gridRows {
+                    NSBezierPath(ovalIn: NSRect(x: (column == Placement.gridColumns ? grid.bounds.maxX : grid.bounds.minX+CGFloat(column)*step.width)-1.5,
+                                               y: (row == Placement.gridRows ? grid.bounds.maxY : grid.bounds.minY+CGFloat(row)*step.height)-1.5, width: 3, height: 3)).fill()
+                }
+            }
+        }
+    }
+    override func mouseDown(with event: NSEvent) { dismiss?() }
+}
+final class PanelView: NSView, WKNavigationDelegate {
+    let id: UUID
+    var url: URL
+    var web: WKWebView?
+    private var document: NSView?
+    var isLive: Bool { web != nil || document != nil }
+    private var widgetPanel: NativeWidgetPanel?
+    private var calendarTodayPending = false
+    private var webDisplayMode: WebDisplayMode = .desktop
+    private var weatherShowsHourly = true
+    private let fileReadAccessRoot: URL?
+    private let weatherProvider: any WeatherProviding
+    private let fileError = FilePanelErrorView(frame: .zero)
+    private(set) var fileState: FilePanelState
+    private var snapshot: NSImage?
+    private let image = NSImageView()
+    private let dormant = label("休止中")
+    private let dormantBadge = NSView()
+    private let resumeHint = label("クリックで再開", size: 12)
+    private var previewContent: NSView?
+    private var previewPlaceholder: NSTextField?
+    let browser = BrowserWindows()
+    private let websiteDataStore: WKWebsiteDataStore
+    private let spinner = NSProgressIndicator()
+    private let menuButton: ActionButton
+    var touched: (() -> Void)?
+    var changed: (() -> Void)?
+    var openedExternalMeeting: (() -> Void)?
+    var command: ((Int) -> Void)?
+    var canEditContent = false
+    var navigated: ((URL) -> Void)?
+    var didSleep: (() -> Void)?
+    var constrain: ((CGRect) -> CGRect)?
+    private var origin = NSPoint.zero
+    private var original = NSRect.zero
+    private var edges = 0
+    private var moving = false
+    private var sleeping = false
+    private var epoch = 0
+    private(set) var editing = false
+    private var visibility = VisibilityPlan(state: .hidden)
+    init(record: PanelRecord, preview: Bool = false, websiteDataStore: WKWebsiteDataStore = .default(), fileReadAccessRoot: URL? = nil, weatherProvider: any WeatherProviding = WeatherService.shared) {
+        self.weatherProvider = weatherProvider
+        self.fileReadAccessRoot = fileReadAccessRoot
+        self.websiteDataStore = websiteDataStore
+        id = record.id; url = WebPanelPolicy.launchURL(record.url); fileState = FilePanelState(url: url); menuButton = ActionButton("", action: {})
+        super.init(frame: .zero)
+        browser.onLastWindowClosed = { [weak self] in self?.didSleep?() }
+        wantsLayer = true; layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor; layer?.cornerRadius = 12; layer?.masksToBounds = true
+        menuButton.actionBlock = { [weak self] in self?.showMenu() }; addSubview(menuButton)
+        menuButton.image = NSImage(systemSymbolName: "line.3.horizontal.circle", accessibilityDescription: "パネルのメニュー")
+        menuButton.imagePosition = .imageOnly; menuButton.toolTip = "パネルのメニュー"
+        menuButton.setAccessibilityLabel("パネルのメニュー")
+        image.imageScaling = .scaleAxesIndependently; image.alphaValue = 0.5; addSubview(image, positioned: .below, relativeTo: menuButton)
+        dormantBadge.wantsLayer = true; dormantBadge.layer?.cornerRadius = 16
+        dormantBadge.layer?.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 0.95).cgColor
+        dormant.alignment = .center; dormant.font = .systemFont(ofSize: 14, weight: .medium)
+        dormantBadge.addSubview(dormant); addSubview(dormantBadge)
+        resumeHint.alignment = .center; resumeHint.textColor = .lightGray; addSubview(resumeHint)
+        spinner.style = .spinning; spinner.isDisplayedWhenStopped = false; addSubview(spinner)
+        if preview {
+            let content = NSView(); content.wantsLayer = true
+            content.layer?.backgroundColor = NSColor(calibratedRed: 0.25, green: 0.34, blue: 0.39, alpha: 1).cgColor
+            let placeholder = label("ひと息つくための、小さな窓", size: 20)
+            placeholder.usesSingleLineMode = false; placeholder.maximumNumberOfLines = 0
+            placeholder.lineBreakMode = .byWordWrapping; placeholder.cell?.wraps = true
+            previewPlaceholder = placeholder; content.addSubview(placeholder)
+            previewContent = content; addSubview(content, positioned: .below, relativeTo: image)
+        }
+        fileError.isHidden = true; addSubview(fileError)
+        setDormantAppearance(false)
+        applyVisibility(VisibilityPlan(state: .hidden))
+        if fileState.source == .unreadable { showFileError(loadFailed: false) }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        widgetPanel?.setActive(window != nil && visibility.alpha > 0)
+    }
+    override func layout() {
+        super.layout()
+        menuButton.frame = NSRect(x: bounds.width-44, y: bounds.height-32, width: 36, height: 28)
+        let content = bounds
+        if let web {
+            let width = webDisplayMode == .mobile && !url.isFileURL ? min(390, content.width) : content.width
+            web.frame = NSRect(x: content.midX-width/2, y: content.minY, width: width, height: content.height)
+        }
+        document?.frame = content
+        fileError.frame = content
+        let imageWidth = webDisplayMode == .mobile && ["http", "https"].contains(url.scheme ?? "") ? min(390, content.width) : content.width
+        image.frame = NSRect(x: content.midX-imageWidth/2, y: content.minY, width: imageWidth, height: content.height)
+        previewContent?.frame = content
+        if let placeholder = previewPlaceholder {
+            let width = max(1, content.width-40)
+            let height = ceil(placeholder.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)).height ?? 0)
+            placeholder.frame = NSRect(x: 20, y: max(0, (content.height-height)/2), width: width, height: height)
+        }
+        dormantBadge.frame = NSRect(x: content.midX-50, y: content.midY+4, width: 100, height: 32)
+        dormant.frame = NSRect(x: 10, y: 5, width: 80, height: 22)
+        resumeHint.frame = NSRect(x: 0, y: content.midY-24, width: bounds.width, height: 20)
+        spinner.frame = NSRect(x: bounds.midX-12, y: content.midY-56, width: 24, height: 24)
+    }
+    func applyVisibility(_ plan: VisibilityPlan) {
+        visibility = plan
+        menuButton.isHidden = !editing || !plan.showsPanelMenuButton
+        browser.setVisible(plan.alpha > 0 && !plan.ignoresMouseEvents)
+        widgetPanel?.setActive(plan.alpha > 0)
+        if plan.alpha == 0, WebPanelPolicy.isNotionCalendar(url) {
+            calendarTodayPending = false
+            web?.evaluateJavaScript(CalendarWebNavigation.cancel, completionHandler: nil)
+        }
+    }
+    func setWeatherShowsHourly(_ value: Bool) {
+        weatherShowsHourly = value; widgetPanel?.model.setShowsHourly(value)
+    }
+    func setWebDisplayMode(_ mode: WebDisplayMode) {
+        guard mode != webDisplayMode else { return }
+        webDisplayMode = mode
+        if let web, !url.isFileURL {
+            web.customUserAgent = mode == .mobile ? Self.mobileUserAgent : nil
+            needsLayout = true; layoutSubtreeIfNeeded()
+            web.reload()
+        }
+    }
+    private static let mobileUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+    func prepareAgendaPresentation(resetScroll: Bool) {
+        guard WidgetSpec(url: url)?.kind == .upcoming else { return }
+        widgetPanel?.model.upcoming.beginPresentation(resetScroll: resetScroll)
+    }
+    func returnCalendarToToday() {
+        guard WebPanelPolicy.isNotionCalendar(url) else { return }
+        calendarTodayPending = true
+        if let web, !web.isLoading, let current = web.url, WebPanelPolicy.canReturnToToday(current) {
+            calendarTodayPending = false
+            web.evaluateJavaScript(CalendarWebNavigation.today, completionHandler: nil)
+        }
+    }
+    func setEditing(_ value: Bool) {
+        editing = value; moving = false; edges = 0
+        widgetPanel?.setEditing(value)
+        layer?.borderWidth = value ? 3 : 0
+        layer?.borderColor = NSColor.controlAccentColor.cgColor; needsDisplay = true
+        window?.invalidateCursorRects(for: self)
+        applyVisibility(visibility)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if editing {
+            NSColor.controlAccentColor.setFill()
+            for x in [CGFloat(0), bounds.width-10] {
+                for y in [CGFloat(0), bounds.height-10] { NSRect(x: x, y: y, width: 10, height: 10).fill() }
+            }
+        }
+    }
+    private func setDormantAppearance(_ active: Bool) {
+        image.isHidden = !active; dormantBadge.isHidden = !active; resumeHint.isHidden = !active
+    }
+    func wake() {
+        if sleeping, web != nil {
+            epoch += 1; sleeping = false; setDormantAppearance(false)
+            return
+        }
+        guard web == nil, document == nil else { return }
+        fileState = FilePanelState(url: url); fileError.isHidden = true
+        switch fileState.source {
+        case .unreadable: showFileError(loadFailed: false); return
+        case .pdf(let file):
+            guard let pdf = PDFDocument(url: file), pdf.pageCount > 0 else { showFileError(); return }
+            let view = PDFView(); view.document = pdf; view.autoScales = true
+            document = view; addSubview(view, positioned: .below, relativeTo: image)
+            setDormantAppearance(false); needsLayout = true; return
+        case .text(let file):
+            guard let text = try? String(contentsOf: file) else { showFileError(); return }
+            let scroll = NativeTextPanel(text: text)
+            document = scroll; addSubview(scroll, positioned: .below, relativeTo: image)
+            setDormantAppearance(false); needsLayout = true; return
+        case .widget(let spec):
+            let widget = NativeWidgetPanel(spec: spec, provider: weatherProvider)
+            if let zones = UserDefaults.standard.stringArray(forKey: digitalZonesKey), !zones.isEmpty {
+                widget.model.digitalZones = zones
+            }
+            widget.model.onClockStyleChange = { [weak self] style in
+                guard let self else { return }
+                self.url = WidgetSpec(kind: .clock, clockStyle: style).url
+                self.fileState = FilePanelState(url: self.url)
+                self.navigated?(self.url)
+            }
+            widget.model.upcoming.onOpenMeeting = { [weak self] url in
+                if SlackLinks.open(url) { self?.openedExternalMeeting?() }
+            }
+            widget.model.upcoming.onOpenLink = widget.model.upcoming.onOpenMeeting
+            widget.model.upcoming.onConfigurationChange = { [weak self, weak widget] in
+                guard let self, let model = widget?.model.upcoming else { return }
+                self.url = WidgetSpec(kind: .upcoming, calendarIDs: model.selectedCalendarIDs, agendaDays: model.displayDays, excludedKeywords: model.excludedKeywords).url
+                self.fileState = FilePanelState(url: self.url)
+                self.navigated?(self.url)
+            }
+            widgetPanel = widget; document = widget
+            widget.model.setShowsHourly(weatherShowsHourly)
+            widget.setEditing(editing)
+            addSubview(widget, positioned: .below, relativeTo: image)
+            widget.setActive(visibility.alpha > 0)
+            setDormantAppearance(false); needsLayout = true; return
+        default: break
+        }
+        epoch += 1; sleeping = false; setDormantAppearance(false)
+        spinner.startAnimation(nil)
+        let configuration = WKWebViewConfiguration()
+        let scrollStyle = WKUserScript(source: """
+            (() => {
+                const style = document.createElement('style');
+                style.textContent = 'html, * { scrollbar-width: thin; }';
+                (document.head || document.documentElement).appendChild(style);
+            })();
+            """, injectionTime: .atDocumentEnd, forMainFrameOnly: false, in: .defaultClient)
+        configuration.userContentController.addUserScript(scrollStyle)
+        configuration.websiteDataStore = websiteDataStore
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        let view = PanelWebView(frame: .zero, configuration: configuration)
+        if webDisplayMode == .mobile && !url.isFileURL { view.customUserAgent = Self.mobileUserAgent }
+        web = view; view.navigationDelegate = self; view.uiDelegate = browser
+        view.allowsBackForwardNavigationGestures = true
+        addSubview(view, positioned: .below, relativeTo: image); needsLayout = true
+        if case .html(let file) = fileState.source {
+            view.loadFileURL(file, allowingReadAccessTo: fileReadAccessRoot ?? file.deletingLastPathComponent())
+        } else { view.load(URLRequest(url: url)) }
+    }
+    private func showFileError(loadFailed: Bool = true) {
+        if loadFailed { fileState.loadFailed() }
+        fileError.apply(fileState); web?.stopLoading(); web?.navigationDelegate = nil
+        web?.removeFromSuperview(); web = nil; document?.removeFromSuperview(); document = nil
+        spinner.stopAnimation(nil); setDormantAppearance(false); fileError.isHidden = false; needsLayout = true
+    }
+    func reloadContent() {
+        if let widgetPanel { widgetPanel.reload(); return }
+        browser.closeAll()
+        web?.stopLoading(); web?.navigationDelegate = nil; web?.removeFromSuperview(); web = nil
+        document?.removeFromSuperview(); document = nil; wake()
+    }
+    func sleep() {
+        // Do not evict the opener while a login flow still uses window.opener.
+        guard !browser.hasOpenWindows else { return }
+        if fileState.source == .unreadable { return }
+        if let document {
+            widgetPanel?.setActive(false); widgetPanel = nil
+            if let bitmap = document.bitmapImageRepForCachingDisplay(in: document.bounds) {
+                document.cacheDisplay(in: document.bounds, to: bitmap)
+                let picture = NSImage(size: document.bounds.size); picture.addRepresentation(bitmap)
+                snapshot = picture; image.image = picture
+            }
+            document.removeFromSuperview(); self.document = nil
+            setDormantAppearance(true); return
+        }
+        guard !sleeping else { return }
+        guard let view = web else { setDormantAppearance(true); return }
+        sleeping = true; epoch += 1; let token = epoch
+        view.takeSnapshot(with: nil) { [weak self, weak view] picture, _ in
+            guard let self, self.epoch == token, self.sleeping else { return }
+            self.snapshot = picture; self.image.image = picture; self.setDormantAppearance(true)
+            view?.stopLoading(); view?.navigationDelegate = nil; view?.removeFromSuperview(); self.web = nil
+            self.spinner.stopAnimation(nil)
+            self.didSleep?()
+        }
+    }
+    func previewDormant() {
+        layoutSubtreeIfNeeded()
+        if let content = previewContent, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            let picture = NSImage(size: content.bounds.size); picture.addRepresentation(bitmap)
+            snapshot = picture; image.image = picture; content.isHidden = true
+        }
+        setDormantAppearance(true)
+    }
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if action.navigationType == .linkActivated, let url = action.request.url, SlackLinks.desktopURL(url) != nil, SlackLinks.open(url) {
+            decisionHandler(.cancel)
+            openedExternalMeeting?()
+        } else { decisionHandler(.allow) }
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        spinner.stopAnimation(nil)
+        if !url.isFileURL, let current = webView.url, ["http", "https"].contains(current.scheme ?? "") {
+            let saved = WebPanelPolicy.savedURL(current, previous: url)
+            if saved != url { url = saved; navigated?(saved) }
+        }
+        if calendarTodayPending, visibility.alpha > 0, let current = webView.url, WebPanelPolicy.canReturnToToday(current) {
+            calendarTodayPending = false
+            webView.evaluateJavaScript(CalendarWebNavigation.today, completionHandler: nil)
+        }
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { spinner.stopAnimation(nil); if url.isFileURL && (error as NSError).code != NSURLErrorCancelled { showFileError() } }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { spinner.stopAnimation(nil); if url.isFileURL && (error as NSError).code != NSURLErrorCancelled { showFileError() } }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if url.isFileURL { showFileError() }
+    }
+    private func showMenu() {
+        guard editing else { return }
+        let menu = NSMenu()
+        if let spec = WidgetSpec(url: url), spec.kind == .clock {
+            for (tag, title, style) in [(20, "アナログ時計", ClockStyle.analog), (21, "デジタル時計", ClockStyle.digital)] {
+                let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
+                item.tag = tag; item.target = self
+                item.state = widgetPanel?.model.clockStyle == style ? .on : .off
+                menu.addItem(item)
+            }
+            if let model = widgetPanel?.model, model.clockStyle == .digital {
+                let item = NSMenuItem(title: "表示するタイムゾーン", action: nil, keyEquivalent: "")
+                let zonesMenu = NSMenu()
+                let common = Set(WorkCity.names.keys).union(model.digitalZones)
+                let more = NSMenu()
+                for id in common.sorted() + TimeZone.knownTimeZoneIdentifiers.filter({ !common.contains($0) }).sorted() {
+                    let selected = model.digitalZones.contains(id)
+                    let item = NSMenuItem(title: WorkCity.names[id] ?? id, action: #selector(toggleDigitalZone(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = id
+                    item.state = selected ? .on : .off
+                    if selected && model.digitalZones.count == 1 { item.action = nil }
+                    (common.contains(id) ? zonesMenu : more).addItem(item)
+                }
+                let other = NSMenuItem(title: "その他のタイムゾーン", action: nil, keyEquivalent: "")
+                other.submenu = more
+                zonesMenu.addItem(other)
+                item.submenu = zonesMenu
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+        }
+        if WidgetSpec(url: url)?.kind == .worldclock {
+            let item = NSMenuItem(title: "都市と勤務時間を設定…", action: #selector(menuAction(_:)), keyEquivalent: "")
+            item.tag = 24; item.target = self; menu.addItem(item); menu.addItem(.separator())
+        }
+        if WidgetSpec(url: url)?.kind == .upcoming {
+            let item = NSMenuItem(title: "表示するカレンダーを設定…", action: #selector(menuAction(_:)), keyEquivalent: "")
+            item.tag = 22; item.target = self; menu.addItem(item); menu.addItem(.separator())
+        }
+        if WebPanelPolicy.isNotionCalendar(url) {
+            let item = NSMenuItem(title: "今日に戻す", action: #selector(menuAction(_:)), keyEquivalent: "")
+            item.tag = 23; item.target = self; menu.addItem(item); menu.addItem(.separator())
+        }
+        for (index, text) in ["更新", "既定のアプリで開く", "複製", "パネルを閉じる"].enumerated() {
+            if index == 1 && WidgetSpec(url: url) != nil { continue }
+            let item = NSMenuItem(title: text, action: #selector(menuAction(_:)), keyEquivalent: ""); item.tag = index; item.target = self; menu.addItem(item)
+        }
+        if canEditContent {
+            let edit = NSMenuItem(title: "内容を編集…", action: #selector(menuAction(_:)), keyEquivalent: "")
+            edit.tag = 4; edit.target = self; menu.insertItem(edit, at: 1)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: bounds.width-40, y: bounds.height-32), in: self)
+    }
+    private var digitalZonesKey: String { "digitalClock.zones." + id.uuidString }
+    @objc private func toggleDigitalZone(_ item: NSMenuItem) {
+        guard editing, let zone = item.representedObject as? String, let model = widgetPanel?.model else { return }
+        if model.digitalZones.contains(zone) {
+            guard model.digitalZones.count > 1 else { return }
+            model.digitalZones.removeAll { $0 == zone }
+        } else {
+            model.digitalZones.append(zone)
+        }
+        UserDefaults.standard.set(model.digitalZones, forKey: digitalZonesKey)
+    }
+
+    @objc private func menuAction(_ item: NSMenuItem) { performMenuAction(item.tag) }
+    func performMenuAction(_ tag: Int) {
+        guard editing else { return }
+        switch tag {
+        case 20: widgetPanel?.model.clockStyle = .analog
+        case 21: widgetPanel?.model.clockStyle = .digital
+        case 22: widgetPanel?.model.upcoming.isConfiguring = true
+        case 24: widgetPanel?.model.configuringWorldClock = true
+        case 23: returnCalendarToToday()
+        default: command?(tag)
+        }
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        let p = convert(point, from: superview)
+        if editing {
+            if !menuButton.isHidden && menuButton.frame.contains(p) { return menuButton }
+            if let widgetPanel, widgetPanel.allowsControl(at: widgetPanel.convert(p, from: self)) { return hit }
+            return self
+        }
+        return hit
+    }
+    override func mouseDown(with event: NSEvent) {
+        guard editing else { touched?(); return }
+        touched?(); origin = event.locationInWindow; original = frame
+        let p = convert(event.locationInWindow, from: nil)
+        edges = (p.x < 7 ? 1 : 0) | (p.x > bounds.width-7 ? 2 : 0) | (p.y < 7 ? 4 : 0) | (p.y > bounds.height-7 ? 8 : 0)
+        moving = edges == 0
+    }
+    override func resetCursorRects() {
+        guard editing else { return }
+        addCursorRect(bounds, cursor: .openHand)
+        for x in [CGFloat(0), bounds.width-7] {
+            addCursorRect(NSRect(x: x, y: 0, width: 7, height: bounds.height), cursor: .resizeLeftRight)
+        }
+        for y in [CGFloat(0), bounds.height-7] {
+            addCursorRect(NSRect(x: 0, y: y, width: bounds.width, height: 7), cursor: .resizeUpDown)
+        }
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard editing else { return }
+        let dx = event.locationInWindow.x-origin.x, dy = event.locationInWindow.y-origin.y
+        var r = original
+        if moving { r.origin.x += dx; r.origin.y += dy }
+        else {
+            if edges & 1 != 0 { let d = min(dx, original.width-240); r.origin.x += d; r.size.width -= d }
+            if edges & 2 != 0 { r.size.width = max(240, original.width+dx) }
+            if edges & 4 != 0 { let d = min(dy, original.height-160); r.origin.y += d; r.size.height -= d }
+            if edges & 8 != 0 { r.size.height = max(160, original.height+dy) }
+        }
+        if moving || edges != 0 { frame = constrain?(r) ?? r; needsLayout = true }
+    }
+    override func mouseUp(with event: NSEvent) { if editing && (moving || edges != 0) { changed?() }; moving = false; edges = 0 }
+    deinit { browser.closeAll() }
+}
+
+final class OverlayController {
+    let store: SettingsStore
+    private let websiteDataStore: WKWebsiteDataStore
+    let documentStorage: PanelDocumentStorage
+    private let weatherProvider: any WeatherProviding
+    var pool = PanelPool()
+    var records: [PanelRecord]
+    var views: [UUID: PanelView] = [:]
+    let panel: OverlayPanel
+    let root: Backdrop
+    private let pill = label("固定中", size: 13)
+    private let toolbar = OverlayControls(frame: .zero)
+    private var addButton: ActionButton!
+    private var editButton: ActionButton!
+    private(set) var editing = false
+    var state: OverlayState = .hidden
+    var onDismiss: (() -> Void)?
+    private var dialog: OverlayDialogBackdrop?
+    private let actionSelection = ActionSelection()
+    private weak var embeddedSettings: SettingsController?
+    private var showingGallery = false
+    var showingActions: Bool { dialog != nil && embeddedSettings == nil && !showingGallery }
+    private weak var previousResponder: NSResponder?
+    func closeDialog() {
+        guard let dialog else { return }
+        embeddedSettings?.finishEmbedded()
+        embeddedSettings = nil
+        showingGallery = false
+        dialog.removeFromSuperview()
+        self.dialog = nil
+        panel.makeFirstResponder(previousResponder ?? root)
+        previousResponder = nil
+    }
+    private func presentDialog<V: View>(_ content: V, size: NSSize) {
+        let shield = OverlayDialogBackdrop(frame: root.bounds)
+        shield.autoresizingMask = [.width, .height]
+        shield.wantsLayer = true
+        shield.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.32).cgColor
+        shield.close = { [weak self] in self?.closeDialog() }
+        let host = NSHostingView(rootView: content)
+        let w = min(size.width, root.bounds.width - 24), h = min(size.height, root.bounds.height - 24)
+        host.frame = NSRect(x: (root.bounds.width-w)/2, y: (root.bounds.height-h)/2, width: w, height: h)
+        host.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        shield.addSubview(host)
+        previousResponder = panel.firstResponder
+        root.addSubview(shield, positioned: .above, relativeTo: nil)
+        dialog = shield
+        panel.makeFirstResponder(shield)
+    }
+    func presentSettings(_ controller: SettingsController) {
+        closeDialog()
+        embeddedSettings = controller
+        controller.embeddedWindow = panel
+        presentDialog(OverlaySettingsForm(controller: controller) { [weak self] in self?.closeDialog() }, size: NSSize(width: 650, height: 560))
+        controller.refresh()
+    }
+    private func performAction(_ action: OverlayAction) {
+        closeDialog()
+        if action == .edit { setEditing(!editing) } else { onOpenSettings?() }
+    }
+    var onOpenSettings: (() -> Void)?
+    var isSettingsKey: (() -> Bool)?
+    private var visibilityRevision = 0
+    private var monitor: Any?
+    private let displayIdentity = DisplayIdentity()
+    private var activeDisplay: String?
+    private var activeShared = true
+    private var presentationWasFitted = false
+    private var ephemeralLayouts: [String: DisplayLayout] = [:]
+    private var outsideClickMonitor: Any?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private func monitorOutsideInteraction(_ visible: Bool) {
+        if !visible {
+            if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
+            outsideClickMonitor = nil
+            for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+            workspaceObservers.removeAll()
+            return
+        }
+        guard workspaceObservers.isEmpty else { return }
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            guard let self, self.state != .hidden, self.panel.attachedSheet == nil else { return }
+            self.onDismiss?()
+        }
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            guard let self, self.state != .hidden,
+                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.activationPolicy == .regular, app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            self.onDismiss?()
+        })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.state != .hidden else { return }
+            self.onDismiss?()
+        })
+    }
+
+    private var screenObserver: NSObjectProtocol?
+    init(store: SettingsStore, websiteDataStore: WKWebsiteDataStore = .default(), documentStorage: PanelDocumentStorage = PanelDocumentStorage(), weatherProvider: any WeatherProviding = WeatherService.shared) {
+        self.weatherProvider = weatherProvider
+        self.documentStorage = documentStorage
+        self.websiteDataStore = websiteDataStore
+        self.store = store; records = Array(store.panels.prefix(PanelPool.maximum)).map { record in
+            var clean = record; clean.url = WebPanelPolicy.launchURL(record.url); return clean
+        }
+        root = Backdrop(frame: NSRect(x: 0, y: 0, width: 1800, height: 1169))
+        panel = OverlayPanel(contentRect: root.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.sharingType = store.hideFromScreenCapture ? .none : .readOnly
+        panel.contentView = root; panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+        panel.level = .screenSaver; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.hidesOnDeactivate = false; panel.alphaValue = 0; panel.ignoresMouseEvents = true
+        root.dismiss = { [weak self] in self?.onDismiss?() }; panel.dismiss = root.dismiss
+        root.addSubview(toolbar)
+        pill.alignment = .center; pill.textColor = .secondaryLabelColor
+        pill.font = .systemFont(ofSize: 11); toolbar.addSubview(pill)
+        addButton = ActionButton("パネルを追加") { [weak self] in self?.addPrompt() }
+        addButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+        addButton.imagePosition = .imageLeading; addButton.contentTintColor = .labelColor
+        toolbar.addSubview(addButton)
+        editButton = ActionButton("レイアウトを編集") { [weak self] in
+            guard let self else { return }; self.setEditing(!self.editing)
+        }; editButton.imagePosition = .imageLeading; editButton.contentTintColor = .labelColor
+        toolbar.addSubview(editButton)
+        for button in [addButton!, editButton!] {
+            if #available(macOS 26.0, *) { button.bezelStyle = .glass }
+            button.controlSize = .large
+            button.font = .systemFont(ofSize: 14, weight: .medium)
+        }
+        for record in records { install(record); if WidgetSpec(url: record.url) == nil { pool.add(record.id) } }
+        reconcile()
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            let ids = Set(NSScreen.screens.compactMap { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value })
+            self?.displayIdentity.forgetUnavailable(connected: ids)
+        }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel, .keyDown]) { [weak self] event in
+            guard let self, event.window === self.panel else { return event }
+            if self.state == .peek && self.store.peekAllowsInteraction { return PanelPointerEvents.withoutCommand(event) }
+            guard self.state == .pinned else { return event }
+            if self.embeddedSettings?.isRecording == true { return event }
+            if event.type == .keyDown && event.charactersIgnoringModifiers == "," &&
+                event.modifierFlags.intersection([.command, .shift, .control, .option]) == .command {
+                if !event.isARepeat {
+                    if self.dialog != nil { self.closeDialog() }
+                    else {
+                        self.actionSelection.selected = .edit
+                        self.presentDialog(OverlayActionList(selection: self.actionSelection, editing: self.editing) { [weak self] in self?.performAction($0) }, size: NSSize(width: 360, height: 164))
+                    }
+                }
+                return nil
+            }
+            if self.dialog != nil {
+                if event.type == .keyDown {
+                    switch event.keyCode {
+                    case 53: self.closeDialog(); return nil
+                    case 125, 126:
+                        if self.showingActions { self.actionSelection.move(event.keyCode == 125 ? 1 : -1); return nil }
+                    case 36, 76:
+                        if self.showingActions && !event.isARepeat { self.performAction(self.actionSelection.selected); return nil }
+                    default: break
+                    }
+                }
+                return event
+            }
+            if event.type == .keyDown && event.keyCode == 14 &&
+                event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command, .shift] {
+                if !event.isARepeat { self.setEditing(!self.editing) }
+                return nil
+            }
+            if event.type == .keyDown && event.keyCode == 53 {
+                if self.editing { self.setEditing(false) }
+                else { self.onDismiss?() }
+                return nil
+            }
+            if event.type == .leftMouseDown {
+                let p = self.root.convert(event.locationInWindow, from: nil)
+                if let view = self.root.subviews.reversed().compactMap({ $0 as? PanelView }).first(where: { $0.frame.contains(p) }) { self.touch(view.id) }
+            }
+            return event
+        }
+    }
+    func show(_ next: OverlayState, immediately: Bool = false) {
+        let wasHidden = state == .hidden; state = next
+        monitorOutsideInteraction(next != .hidden)
+        if next != .pinned { closeDialog(); setEditing(false) }
+        visibilityRevision += 1
+        let revision = visibilityRevision
+        let plan = VisibilityPlan(state: next, peekAllowsInteraction: store.peekAllowsInteraction)
+        panel.sharingType = store.hideFromScreenCapture ? .none : .readOnly
+        for view in views.values { view.browser.hideFromScreenCapture = store.hideFromScreenCapture; view.setWeatherShowsHourly(store.weatherShowsHourly) }
+        panel.ignoresMouseEvents = plan.ignoresMouseEvents
+        for view in views.values { view.setWebDisplayMode(store.webDisplayMode); view.applyVisibility(plan) }
+        layoutChrome()
+        if next == .hidden {
+            if immediately {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0; self.panel.animator().alphaValue = 0
+                }
+                return
+            }
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = plan.fadeDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                self.panel.animator().alphaValue = plan.alpha
+            }, completionHandler: { [weak self] in
+                guard let self, self.visibilityRevision == revision, self.state == .hidden,
+                      self.panel.isKeyWindow, !(self.isSettingsKey?() ?? false) else { return }
+                NSApp.deactivate()
+            })
+            return
+        }
+        if wasHidden, let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
+            // AppKit screen coordinates start at the bottom. Reserve the full notch strip.
+            var canvas = screen.frame
+            canvas.size.height -= screen.safeAreaInsets.top
+            let current = activeDisplay == nil ? nil : displayedLayout()
+            let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            // No screen index/name fallback: missing UUID/number never borrows another display's layout.
+            let key = number.map { displayIdentity.key(for: $0) } ?? "ephemeral:" + UUID().uuidString
+            let layout = (!store.sameLayoutOnAllDisplays ? ephemeralLayouts[key] : nil)
+                ?? store.layout(for: key, screen: canvas.size, current: current)
+            activeDisplay = key; activeShared = store.sameLayoutOnAllDisplays
+            panel.setFrame(canvas, display: false); root.frame.size = canvas.size
+            let selected = Array(layout.panels.prefix(PanelPool.maximum))
+            for id in Array(views.keys) where !selected.contains(where: { $0.id == id }) {
+                views.removeValue(forKey: id)?.removeFromSuperview(); pool.remove(id)
+            }
+            records = selected.map { record in
+                var clean = record; clean.url = WebPanelPolicy.launchURL(record.url); return clean
+            }
+            let selectedLayout = DisplayLayout(panels: records, referenceSize: layout.referenceSize)
+            presentationWasFitted = !store.sameLayoutOnAllDisplays && LayoutFitter.needsFitting(layout: selectedLayout, screen: canvas.size)
+            for record in records {
+                if views[record.id]?.url != record.url { views.removeValue(forKey: record.id)?.removeFromSuperview(); pool.remove(record.id) }
+                if views[record.id] == nil { install(record); if WidgetSpec(url: record.url) == nil { pool.add(record.id) } }
+            }
+            for (record, frame) in zip(records, presentationFrames(layout: DisplayLayout(panels: records, referenceSize: layout.referenceSize), screen: canvas.size)) {
+                views[record.id]?.frame = frame
+                if let view = views[record.id] { root.addSubview(view, positioned: .above, relativeTo: nil); view.needsLayout = true }
+            }
+            reconcile()
+        }
+        if wasHidden { for view in views.values { view.prepareAgendaPresentation(resetScroll: store.agendaResetsScrollOnOpen) } }
+        if wasHidden && store.calendarReturnsToToday { for view in views.values { view.returnCalendarToToday() } }
+        layoutChrome(); panel.orderFrontRegardless()
+        if wasHidden || immediately {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = immediately ? 0 : plan.fadeDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                self.panel.animator().alphaValue = plan.alpha
+            }
+        }
+        if plan.makeKey { panel.makeKey() }
+    }
+    func layoutChrome() {
+        let width: CGFloat = 432
+        toolbar.frame = NSRect(x: root.bounds.midX-width/2, y: 24, width: width, height: editing ? 80 : 56)
+        toolbar.isHidden = state != .pinned || !editing
+        addButton.title = records.isEmpty ? "最初のパネルを追加" : "パネルを追加"
+        addButton.frame = NSRect(x: 8, y: 30, width: 256, height: 44); addButton.isHidden = !editing
+        editButton.toolTip = "レイアウト編集を切り替え（⌘⇧E）"
+        editButton.title = editing ? "完了" : "レイアウトを編集"
+        editButton.image = NSImage(systemSymbolName: editing ? "checkmark" : "square.and.pencil", accessibilityDescription: nil)
+        editButton.frame = editing ? NSRect(x: 280, y: 30, width: 144, height: 44) : NSRect(x: 0, y: 6, width: 224, height: 44)
+        pill.stringValue = "ドラッグで移動 · 端でサイズ変更 · Esc で完了"
+        pill.frame = NSRect(x: 16, y: 8, width: 400, height: 18); pill.isHidden = !editing
+        root.addSubview(toolbar, positioned: dialog == nil ? .above : .below, relativeTo: dialog)
+    }
+    func setEditing(_ value: Bool) {
+        closeDialog()
+        editing = value && state == .pinned
+        root.editing = editing
+        for view in views.values {
+            view.setEditing(editing)
+        }
+        layoutChrome()
+    }
+    private func install(_ record: PanelRecord) {
+        let view = PanelView(record: record, websiteDataStore: websiteDataStore, fileReadAccessRoot: documentStorage.resourceRoot(for: record.url), weatherProvider: weatherProvider); views[record.id] = view; root.addSubview(view)
+        view.browser.hideFromScreenCapture = store.hideFromScreenCapture
+        view.setWeatherShowsHourly(store.weatherShowsHourly)
+        view.setWebDisplayMode(store.webDisplayMode)
+        view.applyVisibility(VisibilityPlan(state: state, peekAllowsInteraction: store.peekAllowsInteraction))
+        view.setEditing(editing)
+        view.canEditContent = documentStorage.owns(record.url)
+        view.frame = record.placement.restore(screen: root.bounds.size)
+        view.touched = { [weak self] in self?.touch(record.id) }
+        view.changed = { [weak self] in self?.saveFrames() }
+        view.openedExternalMeeting = { [weak self] in self?.onDismiss?() }
+        view.didSleep = { [weak self] in self?.reconcile() }
+        view.navigated = { [weak self] url in
+            guard let self, let index = self.records.firstIndex(where: { $0.id == record.id }) else { return }
+            self.records[index].url = url; self.persist()
+        }
+        view.constrain = { [weak self] frame in guard let self else { return frame }; return Placement.constrain(frame, screen: self.root.bounds.size, others: self.views.filter { $0.key != record.id }.map { $0.value.frame }) }
+        view.command = { [weak self] command in
+            guard let self, self.editing, let view = self.views[record.id] else { return }
+            switch command {
+            case 0: self.touch(record.id); view.reloadContent()
+            case 1: SlackLinks.open(view.web?.url ?? view.url)
+            case 2: self.add(view.web?.url ?? view.url)
+            case 4:
+                guard self.documentStorage.owns(view.url) else { return }
+                self.documentPrompt(kind: view.url.pathExtension == "html" ? .html : .text, existing: view)
+            default: view.removeFromSuperview(); self.views.removeValue(forKey: record.id); PanelActions.close(record.id, records: &self.records, pool: &self.pool); self.persist(); self.layoutChrome()
+            }
+        }
+    }
+    private func reconcile() {
+        // Native widgets are cheap views, not part of the four-WebView limit.
+        for view in views.values where WidgetSpec(url: view.url) != nil { view.wake() }
+        // Snapshot eviction completes before allocating the replacement web view.
+        // Pending snapshots count toward the physical four-web-view limit.
+        for entry in pool.entries where !entry.live { views[entry.id]?.sleep() }
+        for entry in pool.entries where entry.live {
+            guard let view = views[entry.id] else { continue }
+            if view.web != nil || views.values.filter({ $0.web != nil }).count < PanelPool.liveLimit { view.wake() }
+        }
+    }
+    func touch(_ id: UUID) {
+        guard state == .pinned, let view = views[id] else { return }
+        root.addSubview(view, positioned: .above, relativeTo: nil); pool.view(id); reconcile()
+        layoutChrome()
+        if editing, let index = records.firstIndex(where: { $0.id == id }) {
+            let record = records.remove(at: index); records.append(record); persist()
+        }
+    }
+    func add(_ url: URL) {
+        guard editing else { return }
+        guard records.count < PanelPool.maximum else { NSSound.beep(); return }
+        let n = records.count % 5, grid = PanelGrid(screen: root.bounds.size)
+        let kind = WidgetSpec(url: url)?.kind
+        let rows = kind == .weather ? 4 : kind == .clock ? 2 : 3
+        var initial: CGRect?
+        for row in (0...(Placement.gridRows-rows)).reversed() {
+            for column in 0...(Placement.gridColumns-4) {
+                let candidate = Placement.constrain(grid.frame(column: column, row: row, columns: 4, rows: rows), screen: root.bounds.size)
+                if !views.values.contains(where: { candidate.insetBy(dx: -grid.gap/2, dy: -grid.gap/2).intersects($0.frame) }) {
+                    initial = candidate; break
+                }
+            }
+            if initial != nil { break }
+        }
+        let frame = initial ?? Placement.constrain(grid.frame(column: n, row: n % 4, columns: 4, rows: rows), screen: root.bounds.size)
+        let record = PanelRecord(url: url, placement: FractionalFrame(frame: frame, screen: root.bounds.size))
+        records.append(record); install(record); if WidgetSpec(url: record.url) == nil { pool.add(record.id) }
+        persist()
+        let layout = displayedLayout()
+        presentationWasFitted = !store.sameLayoutOnAllDisplays && (presentationWasFitted || LayoutFitter.needsFitting(layout: layout, screen: root.bounds.size))
+        for (entry, frame) in zip(records, presentationFrames(layout: layout, screen: root.bounds.size)) {
+            views[entry.id]?.frame = frame
+        }
+        reconcile(); persist(); layoutChrome()
+    }
+    private func addPrompt() {
+        guard editing else { return }
+        guard records.count < PanelPool.maximum else { NSSound.beep(); return }
+        closeDialog()
+        showingGallery = true
+        presentDialog(PanelGallery(choose: { [weak self] tag in
+            self?.closeDialog()
+            self?.addSource(tag)
+        }, close: { [weak self] in self?.closeDialog() }), size: NSSize(width: 720, height: 620))
+    }
+    private func addSource(_ tag: Int) {
+        guard editing else { return }
+        switch tag {
+        case 1: documentPrompt(kind: .text)
+        case 2: documentPrompt(kind: .html)
+        case 5: addNotionViewPrompt()
+        case 4: importHTMLPrompt()
+        case 10: add(WidgetSpec(kind: .weather).url)
+        case 11: add(WidgetSpec(kind: .clock).url)
+        case 12: add(WidgetSpec(kind: .calendar).url)
+        case 15: add(WidgetSpec(kind: .calculator).url)
+        case 14: add(WidgetSpec(kind: .worldclock).url)
+        case 13: add(WidgetSpec(kind: .upcoming).url)
+        case 3:
+            let picker = NSOpenPanel(); picker.canChooseDirectories = false; picker.allowsMultipleSelection = true
+            picker.allowedContentTypes = [.pdf, .html, .plainText, UTType(filenameExtension: "md") ?? .plainText,
+                                          UTType(filenameExtension: "log") ?? .plainText, UTType(filenameExtension: "xhtml") ?? .html]
+            picker.beginSheetModal(for: panel) { [weak self] response in
+                if response == .OK { for url in picker.urls { self?.add(url) } }
+            }
+        default: addWebPrompt()
+        }
+    }
+    private func addNotionViewPrompt(_ previous: String = "", invalid: Bool = false) {
+        let alert = NSAlert()
+        alert.messageText = "Notionデータベースのビューを追加"
+        alert.informativeText = invalid ? "ビューを特定できません。Notionのビュー名のメニューから「ビューのリンクをコピー」して貼り付けてください。" : "Notionで表示したいビューのリンクをコピーして貼り付けてください。"
+        alert.addButton(withTitle: "追加")
+        alert.addButton(withTitle: "キャンセル")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
+        field.stringValue = previous
+        field.placeholderString = "https://www.notion.so/…?v=…"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: panel) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            if let url = WebPanelPolicy.notionViewURL(field.stringValue) { self?.add(url) }
+            else { DispatchQueue.main.async { self?.addNotionViewPrompt(field.stringValue, invalid: true) } }
+        }
+    }
+    private func addWebPrompt() {
+        let alert = NSAlert(); alert.messageText = "ウェブパネルを追加"; alert.addButton(withTitle: "追加"); alert.addButton(withTitle: "キャンセル")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24)); field.placeholderString = "https://example.com"; alert.accessoryView = field
+        alert.beginSheetModal(for: panel) { [weak self] response in if response == .alertFirstButtonReturn, let url = SettingsStore.normalize(field.stringValue) { self?.add(url) } }
+    }
+    private func importHTMLPrompt() {
+        guard editing else { return }
+        let picker = NSOpenPanel(); picker.canChooseDirectories = true; picker.canChooseFiles = true
+        picker.allowedContentTypes = [.html, .folder, UTType(filenameExtension: "xhtml") ?? .html]
+        picker.prompt = "取り込む"; picker.message = "HTMLをコピーして保存します。画像・CSSを含める場合は、そのフォルダを選んでください。"
+        picker.beginSheetModal(for: panel) { [weak self] response in
+            guard let self, response == .OK, let selected = picker.url else { return }
+            var directory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: selected.path, isDirectory: &directory), directory.boolValue {
+                let index = ["index.html", "index.htm", "index.xhtml"].map { selected.appendingPathComponent($0) }
+                    .first { FileManager.default.isReadableFile(atPath: $0.path) }
+                if let index { self.importHTML(index, root: selected) }
+                else {
+                    let entry = NSOpenPanel(); entry.canChooseDirectories = false; entry.directoryURL = selected
+                    entry.allowedContentTypes = [.html, UTType(filenameExtension: "xhtml") ?? .html]
+                    entry.message = "このフォルダ内で、最初に表示するHTMLを選んでください。"
+                    entry.beginSheetModal(for: self.panel) { [weak self] response in
+                        if response == .OK, let file = entry.url { self?.importHTML(file, root: selected) }
+                    }
+                }
+            } else { self.importHTML(selected) }
+        }
+    }
+    private func importHTML(_ source: URL, root: URL? = nil) {
+        guard editing, records.count < PanelPool.maximum else { return }
+        let progress = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 100), styleMask: .titled, backing: .buffered, defer: false)
+        progress.title = "HTMLを取り込み中"; progress.isReleasedWhenClosed = false
+        let spinner = NSProgressIndicator(frame: NSRect(x: 24, y: 34, width: 28, height: 28)); spinner.style = .spinning
+        progress.contentView?.addSubview(spinner); spinner.startAnimation(nil)
+        let text = NSTextField(labelWithString: "ファイルをコピーしています…"); text.frame = NSRect(x: 68, y: 36, width: 268, height: 24)
+        progress.contentView?.addSubview(text); panel.beginSheet(progress)
+        let storage = documentStorage
+        Task { @MainActor [weak self] in
+            let result = await Task.detached { Result { try storage.importHTML(source, resourceRoot: root) } }.value
+            guard let self else { return }
+            self.panel.endSheet(progress); progress.close()
+            do { let imported = try result.get(); if self.editing { self.add(imported) } }
+            catch { NSAlert(error: error).beginSheetModal(for: self.panel, completionHandler: nil) }
+        }
+    }
+    private func documentPrompt(kind: PanelDocumentStorage.Kind, existing: PanelView? = nil) {
+        guard editing else { return }
+        let alert = NSAlert()
+        let name = kind == .html ? "HTML" : "テキスト"
+        alert.messageText = existing == nil ? "\(name) パネルを追加" : "\(name) を編集"
+        alert.informativeText = kind == .html ? "HTML を入力するか、貼り付けてください。" : "テキストを入力するか、貼り付けてください。"
+        alert.addButton(withTitle: existing == nil ? "追加" : "保存"); alert.addButton(withTitle: "キャンセル")
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 280)); scroll.hasVerticalScroller = true
+        let editor = NSTextView(frame: scroll.bounds); editor.isRichText = false
+        editor.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        editor.textContainerInset = NSSize(width: 12, height: 12)
+        editor.isVerticallyResizable = true; editor.isHorizontallyResizable = false; editor.autoresizingMask = .width
+        editor.textContainer?.widthTracksTextView = true
+        if let existing { editor.string = (try? String(contentsOf: existing.url)) ?? "" }
+        scroll.documentView = editor; alert.accessoryView = scroll; alert.window.initialFirstResponder = editor
+        alert.beginSheetModal(for: panel) { [weak self, weak existing] response in
+            guard let self, self.editing, response == .alertFirstButtonReturn else { return }
+            do {
+                if let existing {
+                    try self.documentStorage.replace(editor.string, at: existing.url); existing.reloadContent()
+                } else {
+                    guard self.records.count < PanelPool.maximum else { NSSound.beep(); return }
+                    let url = try self.documentStorage.create(editor.string, kind: kind); self.add(url)
+                }
+            } catch { NSAlert(error: error).beginSheetModal(for: self.panel) }
+        }
+    }
+    private func presentationFrames(layout: DisplayLayout, screen: CGSize) -> [CGRect] {
+        store.sameLayoutOnAllDisplays ? LayoutFitter.relativeFrames(layout: layout, screen: screen)
+                                     : LayoutFitter.frames(layout: layout, screen: screen)
+    }
+    private func saveFrames() {
+        guard editing else { return }
+        persist()
+    }
+    private func displayedLayout() -> DisplayLayout {
+        var displayed = records
+        for i in displayed.indices {
+            if let view = views[displayed[i].id] { displayed[i].placement = FractionalFrame(frame: view.frame, screen: root.bounds.size) }
+        }
+        return DisplayLayout(panels: displayed, referenceSize: root.bounds.size)
+    }
+    private func persist() {
+        guard let display = activeDisplay else { return }
+        let layout = displayedLayout()
+        records = layout.panels
+        // Web navigation callbacks can arrive after the settings toggle but before show.
+        guard activeShared == store.sameLayoutOnAllDisplays else { return }
+        if !activeShared && display.hasPrefix("ephemeral:") { ephemeralLayouts[display] = layout }
+        else { store.savePresentedLayout(layout, for: display, wasFitted: presentationWasFitted) }
+    }
+    deinit {
+        monitorOutsideInteraction(false)
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        panel.orderOut(nil)
+    }
+}

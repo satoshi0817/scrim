@@ -2,16 +2,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "Sheerpane",
+    name: "Scrim",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "SheerpaneCore", targets: ["SheerpaneCore"]),
-        .executable(name: "Sheerpane", targets: ["Sheerpane"]),
+        .library(name: "ScrimCore", targets: ["ScrimCore"]),
+        .executable(name: "Scrim", targets: ["Scrim"]),
     ],
     targets: [
-        .target(name: "SheerpaneCore"),
-        .target(name: "SheerpaneAssets", resources: [.process("Resources")]),
-        .executableTarget(name: "Sheerpane", dependencies: ["SheerpaneCore", "SheerpaneAssets"]),
-        .testTarget(name: "SheerpaneTests", dependencies: ["SheerpaneCore", "SheerpaneAssets"]),
+        .target(name: "ScrimCore"),
+        .target(name: "ScrimAssets", resources: [.process("Resources")]),
+        .executableTarget(name: "Scrim", dependencies: ["ScrimCore", "ScrimAssets"]),
+        .testTarget(name: "ScrimTests", dependencies: ["ScrimCore", "ScrimAssets"]),
     ]
 )
