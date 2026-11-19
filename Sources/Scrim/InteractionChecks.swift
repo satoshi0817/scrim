@@ -282,7 +282,14 @@ private struct FixtureWeather: WeatherProviding {
     func cached() async -> WeatherSnapshot? { snapshot }
     func hourlyForecast(force: Bool) async throws -> [WeatherHour] {
         if fails { throw URLError(.notConnectedToInternet) }
-        return (1...8).map { WeatherHour(date: Date().addingTimeInterval(Double($0)*10800), temperature: Double(14+$0), precipitationProbability: $0*10, code: $0 % 2 == 0 ? 2 : 61) }
+        return (1...8).map { hour -> WeatherHour in
+            let date = Date().addingTimeInterval(Double(hour) * 10800)
+            let temperature = Double(14 + hour)
+            let probability = hour * 10
+            let code = hour % 2 == 0 ? 2 : 61
+            return WeatherHour(date: date, temperature: temperature,
+                               precipitationProbability: probability, code: code)
+        }
     }
     func fetch(force: Bool) async throws -> WeatherSnapshot {
         if fails { throw URLError(.notConnectedToInternet) }; return snapshot

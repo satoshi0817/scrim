@@ -81,7 +81,7 @@ struct NativeSettingsForm: View {
                 Text("対応するキャプチャ方式でのみ有効です。現在のmacOSや共有アプリでは表示される場合があるため、共有先で事前に確認してください。撮影するときはオフにできます。")
             }
             Section {
-                LabeledContent("バージョン", value: "0.1.0 (8)")
+                LabeledContent("バージョン", value: "1.0.0 (9)")
             } header: { Text("Scrim") }
         }
         .toggleStyle(.switch)
