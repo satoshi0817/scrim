@@ -154,6 +154,21 @@ func verifyNativeSettings() throws {
     try check(gestureChanges == retries+1, "Reconnect button must restart the monitor")
     controller.gestureAvailable = { true }
     try check(controller.monitoringStatus == "動作中", "Healthy monitoring must be distinguished from permission")
+    let originalPageKeys = store.pageArrowModifiers
+    func record(_ type: NSEvent.EventType, _ flags: NSEvent.ModifierFlags, _ code: UInt16) {
+        controller.recordPageKey(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: 0,
+            windowNumber: controller.window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)!)
+    }
+    controller.beginPageKeyRecording()
+    record(.flagsChanged, .control, 59)
+    record(.keyDown, [], 53)
+    try check(!controller.recordingPageKeys && store.pageArrowModifiers == originalPageKeys, "Escape must discard the recorded modifiers")
+    controller.beginPageKeyRecording()
+    record(.flagsChanged, .option, 58)
+    record(.flagsChanged, [.option, .shift], 56)
+    record(.flagsChanged, .shift, 58)
+    record(.flagsChanged, [], 56)
+    try check(!controller.recordingPageKeys && store.pageArrowModifiers == NSEvent.ModifierFlags([.option, .shift]).rawValue, "Releasing the chord must save both modifiers")
     print("PASS: native settings bindings, Dock callback, login service, layout callback, gesture controls, timing validation, shortcut success/failure/cancel")
 }
 
@@ -850,6 +865,72 @@ func verifyPanelBehavior() throws {
     preferences.setCaptureExclusion(false); controller.show(.pinned, immediately: true)
     try check(preferences.window.sharingType == .readOnly && controller.panel.sharingType == .readOnly,
               "Capture exclusion must be reversible for screenshots")
+    controller.setEditing(true)
+    let firstURL = URL(string: "https://first.invalid/")!
+    let secondURL = URL(string: "https://second.invalid/")!
+    controller.add(firstURL)
+    controller.add(secondURL)
+    let firstPanel = try controller.records.first(where: { $0.url == firstURL }).unwrap("Missing first web panel")
+    let secondPanel = try controller.records.first(where: { $0.url == secondURL }).unwrap("Missing second web panel")
+    let changedURL = URL(string: "https://updated.invalid/")!
+    controller.updateWebPanel(firstPanel.id, url: changedURL, mode: .mobile)
+    controller.show(.hidden, immediately: true)
+    controller.show(.pinned, immediately: true)
+    try check(controller.records.first(where: { $0.id == firstPanel.id })?.url == changedURL &&
+              controller.records.first(where: { $0.id == firstPanel.id })?.webDisplayMode == .mobile &&
+              controller.records.first(where: { $0.id == secondPanel.id })?.webDisplayMode == .desktop &&
+              controller.views[secondPanel.id]?.url == secondURL,
+              "URL and viewport edits must survive reopening and affect only the selected panel")
+    let retainedWeb = try controller.views.values.first(where: { $0.url.isFileURL && $0.web != nil })?.web.unwrap("Missing local session")
+    guard let retainedWeb else { throw CheckError.failed("Missing loaded HTML fixture") }
+    _ = try javascript("window.scrimPageSession = 'in-memory'; document.body.dataset.draft = 'unfinished'", in: retainedWeb)
+    let originalIDs = controller.records.map(\.id)
+    controller.setEditing(true)
+    storage.setData(try JSONEncoder().encode(controller.records), forKey: "page.1.panels")
+    controller.selectPage(store.appendPage())
+    try check(controller.records.isEmpty && store.currentPage == 1, "New canvas must start empty")
+    controller.add(WidgetSpec(kind: .clock).url)
+    let clockID = controller.records.first?.id
+    controller.setEditing(false)
+    func pageKey(_ code: UInt16, _ flags: NSEvent.ModifierFlags) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                         windowNumber: controller.panel.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
+                         isARepeat: false, keyCode: code)!
+    }
+    func sendPageKey(_ code: UInt16, _ flags: NSEvent.ModifierFlags = [.option, .command]) {
+        NSApp.postEvent(pageKey(code, flags), atStart: true)
+        if let event = NSApp.nextEvent(matching: .keyDown, until: Date(timeIntervalSinceNow: 0.15), inMode: .default, dequeue: true) {
+            NSApp.sendEvent(event)
+        }
+    }
+    controller.panel.makeFirstResponder(nil)
+    sendPageKey(123)
+    try check(store.currentPage == 0 && controller.records.map(\.id) == originalIDs, "Left shortcut must restore first canvas")
+    let sessionState = try javascript("window.scrimPageSession + ':' + document.body.dataset.draft", in: retainedWeb) as? String
+    try check(controller.views.values.contains { $0.web === retainedWeb } && sessionState == "in-memory:unfinished",
+              "Switching canvases must preserve the same live WebKit document")
+    controller.panel.makeFirstResponder(retainedWeb)
+    _ = try javascript("const field = document.createElement('input'); document.body.append(field); field.id='arrow-edit'; field.focus(); field.onkeydown = () => window.arrowReceived = true; true", in: retainedWeb)
+    sendPageKey(124, [])
+    try waitFor("web editor receives its arrow") { (try? javascript("window.arrowReceived === true", in: retainedWeb) as? Bool) == true }
+    try check(store.currentPage == 0, "An editor must retain arrow navigation")
+    _ = try javascript("document.activeElement.blur()", in: retainedWeb)
+    store.pageArrowModifiers = NSEvent.ModifierFlags.option.rawValue
+    sendPageKey(124, .option)
+    try waitFor("arrow from focused web content switches canvas") { store.currentPage == 1 }
+    try check(store.currentPage == 1 && controller.records.count == 1 && controller.records.first?.id == clockID, "Right shortcut must restore second canvas")
+    controller.setEditing(true)
+    controller.movePage(1, to: 0)
+    try check(store.currentPage == 0 && controller.records.first?.id == clockID, "Moving a page must keep its content selected")
+    controller.selectPage(1)
+    try check(controller.records.map(\.id) == originalIDs, "Reordered neighbor must retain its panels")
+    controller.movePage(0, to: 1)
+    controller.selectPage(1)
+    controller.removeCurrentPage(1)
+    try check(store.pageCount == 1 && store.currentPage == 0 && controller.records.map(\.id) == originalIDs,
+              "Deleting a canvas must preserve the neighboring canvas")
+    controller.removeCurrentPage(0)
+    try check(store.pageCount == 1, "The last canvas stays available")
     print("PASS: launch URL cleanup, interactive peek and preference, native WebKit click, Command normalization, settings route, delayed Today reset, browse-after-reset, cancellation")
 }
 

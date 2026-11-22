@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #endif
     init(store: SettingsStore) { self.store = store }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ReleaseUpdater.shared.start()
         SettingsController.applyAppearance(store.appearanceMode)
         UserDefaults.standard.set("WhenScrolling", forKey: "AppleShowScrollBars")
         let obsolete = URL(string: "scrim-widget://inbox")!
@@ -56,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.changed = { [weak self] in guard let self else { return }; if self.settings.embeddedWindow == nil { self.machine.dismiss() }; self.apply(); self.input.configure(self.store) }
         input.onEdge = { [weak self] down, fallback in
             guard let self else { return }
+            if self.settings.recordingPageKeys { return }
             if self.settings.isRecording {
                 if down && self.store.method == .carbon { self.settings.receiveShortcut(self.store.shortcut) }
                 return
@@ -94,11 +96,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.refreshEntry()
         }
         gestureInput.onEffect = { [weak self] effect in
-            guard let self, !self.settings.isRecording else { return }
+            guard let self, !self.settings.recordingAnyKeys else { return }
             switch effect {
             case .none: return
-            case .peek: self.overlay.show(.peek)
-            case .pin: self.machine.pin(); self.apply()
+            case .peek:
+                if self.machine.state != .pinned { self.overlay.show(.peek) }
+            case .pin:
+                if self.machine.state == .pinned { self.machine.dismiss() }
+                else { self.machine.pin() }
+                self.apply()
             case .hide: self.machine.dismiss(); self.apply()
             case .hideImmediately: self.machine.dismiss(); self.overlay.show(.hidden, immediately: true)
             }

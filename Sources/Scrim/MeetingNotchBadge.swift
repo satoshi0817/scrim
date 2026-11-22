@@ -62,9 +62,8 @@ extension Notification.Name {
               let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
             sources.removeAll(); panel.orderOut(nil); return
         }
-        var panels = store.panels
-        if !store.sameLayoutOnAllDisplays, let layout = store.layoutsByDisplay[identity.key(for: number.uint32Value)] { panels = layout.panels }
-        let urls = Set(panels.prefix(PanelPool.maximum).map(\.url).filter { WidgetSpec(url: $0)?.kind == .upcoming })
+        let panels = store.panelsAcrossPages(display: identity.key(for: number.uint32Value))
+        let urls = Set(panels.map(\.url).filter { WidgetSpec(url: $0)?.kind == .upcoming })
         sources = sources.filter { urls.contains($0.key) }
         let now = Date()
         for url in urls {

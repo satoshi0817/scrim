@@ -405,7 +405,14 @@ final class PanelView: NSView, WKNavigationDelegate {
             let item = NSMenuItem(title: "今日に戻す", action: #selector(menuAction(_:)), keyEquivalent: "")
             item.tag = 23; item.target = self; menu.addItem(item); menu.addItem(.separator())
         }
-        for (index, text) in ["更新", "既定のアプリで開く", "複製", "パネルを閉じる"].enumerated() {
+        if ["https", "http"].contains(url.scheme?.lowercased()) {
+            let item = NSMenuItem(title: "Webパネル設定…", action: #selector(menuAction(_:)), keyEquivalent: "")
+            item.tag = 25
+            item.target = self
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
+        for (index, text) in ["更新", "既定のアプリで開く", "複製", "パネルを削除"].enumerated() {
             if index == 1 && WidgetSpec(url: url) != nil { continue }
             let item = NSMenuItem(title: text, action: #selector(menuAction(_:)), keyEquivalent: ""); item.tag = index; item.target = self; menu.addItem(item)
         }
@@ -514,8 +521,9 @@ final class OverlayController {
     private var dialog: OverlayDialogBackdrop?
     private let actionSelection = ActionSelection()
     private weak var embeddedSettings: SettingsController?
+    private var editingWebPanel = false
     private var showingGallery = false
-    var showingActions: Bool { dialog != nil && embeddedSettings == nil && !showingGallery }
+    var showingActions: Bool { dialog != nil && embeddedSettings == nil && !showingGallery && !editingWebPanel }
     private weak var previousResponder: NSResponder?
     private var galleryDrag: (originals: [UUID: CGRect], marker: NSView)?
     private func clearGalleryDrag() {
@@ -531,6 +539,7 @@ final class OverlayController {
         embeddedSettings?.finishEmbedded()
         embeddedSettings = nil
         showingGallery = false
+        editingWebPanel = false
         dialog.removeFromSuperview()
         self.dialog = nil
         panel.makeFirstResponder(previousResponder ?? root)
@@ -546,6 +555,7 @@ final class OverlayController {
         let w = min(size.width, root.bounds.width - 24), h = min(size.height, root.bounds.height - 24)
         host.frame = NSRect(x: (root.bounds.width-w)/2, y: (root.bounds.height-h)/2, width: w, height: h)
         host.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        shield.dialogContent = host
         shield.addSubview(host)
         previousResponder = panel.firstResponder
         root.addSubview(shield, positioned: .above, relativeTo: nil)
@@ -569,6 +579,7 @@ final class OverlayController {
     private var monitor: Any?
     private let displayIdentity = DisplayIdentity()
     private var activeDisplay: String?
+    private var presentedPage: Int?
     private var activeShared = true
     private var presentationWasFitted = false
     private var ephemeralLayouts: [String: DisplayLayout] = [:]
@@ -637,11 +648,14 @@ final class OverlayController {
             let ids = Set(NSScreen.screens.compactMap { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value })
             self?.displayIdentity.forgetUnavailable(connected: ids)
         }
+        memoryPressure.setEventHandler { [weak self] in self?.parkedCanvases.removeAll() }
+        memoryPressure.resume()
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel, .keyDown]) { [weak self] event in
             guard let self, event.window === self.panel else { return event }
+            if event.type == .scrollWheel, self.pagesScroll(event) { return nil }
             if self.state == .peek && self.store.peekAllowsInteraction { return PanelPointerEvents.withoutCommand(event) }
             guard self.state == .pinned else { return event }
-            if self.embeddedSettings?.isRecording == true { return event }
+            if self.embeddedSettings?.recordingAnyKeys == true { return event }
             if event.type == .keyDown && event.charactersIgnoringModifiers == "," &&
                 event.modifierFlags.intersection([.command, .shift, .control, .option]) == .command {
                 if !event.isARepeat {
@@ -665,6 +679,14 @@ final class OverlayController {
                     }
                 }
                 return event
+            }
+            if event.type == .keyDown, self.store.pageCount > 1, [123, 124].contains(event.keyCode),
+               self.panel.attachedSheet == nil {
+                let flags = event.modifierFlags.intersection([.command, .shift, .control, .option])
+                if flags == NSEvent.ModifierFlags(rawValue: self.store.pageArrowModifiers) {
+                    if !event.isARepeat { self.selectPage(self.store.currentPage + (event.keyCode == 124 ? 1 : -1)) }
+                    return nil
+                }
             }
             if event.type == .keyDown && event.keyCode == 14 &&
                 event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command, .shift] {
@@ -693,7 +715,7 @@ final class OverlayController {
         panel.sharingType = store.hideFromScreenCapture ? .none : .readOnly
         for view in views.values { view.browser.hideFromScreenCapture = store.hideFromScreenCapture; view.setWeatherShowsHourly(store.weatherShowsHourly) }
         panel.ignoresMouseEvents = plan.ignoresMouseEvents
-        for view in views.values { view.setWebDisplayMode(store.webDisplayMode); view.applyVisibility(plan) }
+        for view in views.values { view.applyVisibility(plan) }
         layoutChrome()
         if next == .hidden {
             if immediately {
@@ -717,32 +739,16 @@ final class OverlayController {
             // AppKit screen coordinates start at the bottom. Reserve the full notch strip.
             var canvas = screen.frame
             canvas.size.height -= screen.safeAreaInsets.top
-            let current = activeDisplay == nil ? nil : displayedLayout()
+            let current = activeDisplay == nil || presentedPage != store.currentPage ? nil : displayedLayout()
             let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
             // No screen index/name fallback: missing UUID/number never borrows another display's layout.
             let key = number.map { displayIdentity.key(for: $0) } ?? "ephemeral:" + UUID().uuidString
-            let layout = (!store.sameLayoutOnAllDisplays ? ephemeralLayouts[key] : nil)
+            let layout = (!store.sameLayoutOnAllDisplays ? ephemeralLayouts[ephemeralKey(key)] : nil)
                 ?? store.layout(for: key, screen: canvas.size, current: current)
             activeDisplay = key; activeShared = store.sameLayoutOnAllDisplays
             panel.setFrame(canvas, display: false); root.frame.size = canvas.size
-            let selected = Array(layout.panels.prefix(PanelPool.maximum))
-            for id in Array(views.keys) where !selected.contains(where: { $0.id == id }) {
-                views.removeValue(forKey: id)?.removeFromSuperview(); pool.remove(id)
-            }
-            records = selected.map { record in
-                var clean = record; clean.url = WebPanelPolicy.launchURL(record.url); return clean
-            }
-            let selectedLayout = DisplayLayout(panels: records, referenceSize: layout.referenceSize)
-            presentationWasFitted = !store.sameLayoutOnAllDisplays && LayoutFitter.needsFitting(layout: selectedLayout, screen: canvas.size)
-            for record in records {
-                if views[record.id]?.url != record.url { views.removeValue(forKey: record.id)?.removeFromSuperview(); pool.remove(record.id) }
-                if views[record.id] == nil { install(record); if WidgetSpec(url: record.url) == nil { pool.add(record.id) } }
-            }
-            for (record, frame) in zip(records, presentationFrames(layout: DisplayLayout(panels: records, referenceSize: layout.referenceSize), screen: canvas.size)) {
-                views[record.id]?.frame = frame
-                if let view = views[record.id] { root.addSubview(view, positioned: .above, relativeTo: nil); view.needsLayout = true }
-            }
-            reconcile()
+            loadPageLayout(layout)
+            presentedPage = store.currentPage
         }
         if wasHidden { for view in views.values { view.prepareAgendaPresentation(resetScroll: store.agendaResetsScrollOnOpen) } }
         if wasHidden && store.calendarReturnsToToday { for view in views.values { view.returnCalendarToToday() } }
@@ -756,7 +762,241 @@ final class OverlayController {
         }
         if plan.makeKey { panel.makeKey() }
     }
+    private func loadPageLayout(_ layout: DisplayLayout) {
+        let selected = Array(layout.panels.prefix(PanelPool.maximum))
+        for id in Array(views.keys) where !selected.contains(where: { $0.id == id }) {
+            views.removeValue(forKey: id)?.removeFromSuperview(); pool.remove(id)
+        }
+        records = selected.map { record in
+            var clean = record; clean.url = WebPanelPolicy.launchURL(record.url); return clean
+        }
+        let selectedLayout = DisplayLayout(panels: records, referenceSize: layout.referenceSize)
+        presentationWasFitted = !store.sameLayoutOnAllDisplays && LayoutFitter.needsFitting(layout: selectedLayout, screen: root.bounds.size)
+        for record in records {
+            if views[record.id]?.url != record.url { views.removeValue(forKey: record.id)?.removeFromSuperview(); pool.remove(record.id) }
+            if views[record.id] == nil { install(record); if WidgetSpec(url: record.url) == nil { pool.add(record.id) } }
+            views[record.id]?.setWebDisplayMode(record.webDisplayMode ?? store.webDisplayMode)
+        }
+        for (record, frame) in zip(records, presentationFrames(layout: DisplayLayout(panels: records, referenceSize: layout.referenceSize), screen: root.bounds.size)) {
+            views[record.id]?.frame = frame
+            if let view = views[record.id] { root.addSubview(view, positioned: .above, relativeTo: nil); view.needsLayout = true }
+        }
+        reconcile()
+    }
+    private struct ParkedCanvas {
+        var index: Int
+        let pool: PanelPool
+        let views: [UUID: PanelView]
+        let addresses: [UUID: URL]
+    }
+    private var parkedCanvases: [ParkedCanvas] = []
+    private let memoryPressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+
+    private func exchangeWebSessions(for index: Int, layout: DisplayLayout, outgoingIndex: Int) {
+        let incoming = parkedCanvases.firstIndex { $0.index == index }.map { parkedCanvases.remove(at: $0) }
+        let live = views.filter { $0.value.web != nil }
+        if !live.isEmpty {
+            for view in live.values {
+                view.applyVisibility(VisibilityPlan(state: .hidden))
+                view.removeFromSuperview()
+            }
+            let addresses = live.mapValues { $0.url }
+            parkedCanvases.append(ParkedCanvas(index: outgoingIndex, pool: pool, views: live, addresses: addresses))
+            if parkedCanvases.count > 2 { parkedCanvases.removeFirst() }
+        }
+        for view in views.values where view.superview != nil { view.removeFromSuperview() }
+        views.removeAll()
+        pool = incoming?.pool ?? PanelPool()
+        let selected = Set(layout.panels.map(\.id))
+        for entry in pool.entries where !selected.contains(entry.id) { pool.remove(entry.id) }
+        guard let incoming else { return }
+        for record in layout.panels {
+            guard let view = incoming.views[record.id], incoming.addresses[record.id] == WebPanelPolicy.launchURL(record.url) else { continue }
+            views[record.id] = view
+            view.browser.hideFromScreenCapture = store.hideFromScreenCapture
+            view.setEditing(editing)
+            view.applyVisibility(VisibilityPlan(state: state, peekAllowsInteraction: store.peekAllowsInteraction))
+        }
+    }
+    private let pageBar = NSStackView()
+    private var pageBarState = ""
+    private var swipeDistance: CGFloat = 0
+    private var verticalDistance: CGFloat = 0
+    private var pagingGesture = false
+    private var verticalGesture = false
+
+    func selectPage(_ index: Int) {
+        guard state == .pinned, dialog == nil, panel.attachedSheet == nil,
+              (0..<store.pageCount).contains(index), index != store.currentPage, let key = activeDisplay else { return }
+        persist()
+        placementPreview = nil
+        let outgoingIndex = store.currentPage
+        store.currentPage = index
+        var layout = (!store.sameLayoutOnAllDisplays ? ephemeralLayouts[ephemeralKey(key)] : nil)
+            ?? store.layout(for: key, screen: root.bounds.size)
+        exchangeWebSessions(for: index, layout: layout, outgoingIndex: outgoingIndex)
+        // A background login redirect may have completed while this canvas was parked.
+        for i in layout.panels.indices {
+            if let view = views[layout.panels[i].id] { layout.panels[i].url = view.url }
+        }
+        loadPageLayout(layout)
+        presentedPage = index
+        for view in views.values { view.prepareAgendaPresentation(resetScroll: store.agendaResetsScrollOnOpen) }
+        layoutChrome()
+        NotificationCenter.default.post(name: .meetingBadgeChanged, object: nil)
+    }
+
+    private func ephemeralKey(_ display: String) -> String { "\(store.currentPage).\(display)" }
+
+    private func pagesScroll(_ event: NSEvent) -> Bool {
+        guard state == .pinned, dialog == nil, panel.attachedSheet == nil, store.pageCount > 1,
+              event.hasPreciseScrollingDeltas else { return false }
+        if !event.momentumPhase.isEmpty { return pagingGesture }
+        if event.phase == .began {
+            swipeDistance = 0; verticalDistance = 0; pagingGesture = false; verticalGesture = false
+        }
+        guard !event.phase.isEmpty else { return false }
+        swipeDistance += event.scrollingDeltaX
+        verticalDistance += event.scrollingDeltaY
+        if !pagingGesture && !verticalGesture {
+            if abs(swipeDistance) > 8 && abs(swipeDistance) > abs(verticalDistance) * 1.5 { pagingGesture = true }
+            else if abs(verticalDistance) > 8 { verticalGesture = true }
+        }
+        guard pagingGesture else { return false }
+        let threshold = min(110, root.bounds.width * 0.12)
+        if event.phase == .ended && abs(swipeDistance) >= threshold * 0.55 {
+            selectPage(store.currentPage + (swipeDistance < 0 ? 1 : -1))
+        }
+        return true
+    }
+
+    private func confirmPageRemoval() {
+        guard editing, store.pageCount > 1, panel.attachedSheet == nil else { return }
+        let index = store.currentPage
+        let alert = NSAlert()
+        alert.messageText = "ページ " + String(index + 1) + " を削除しますか？"
+        alert.informativeText = "このページに配置したパネルを、すべてのディスプレイのレイアウトから取り除きます。Webページや元のファイルは保持されます。"
+        alert.addButton(withTitle: "キャンセル")
+        alert.addButton(withTitle: "削除").hasDestructiveAction = true
+        alert.beginSheetModal(for: panel) { [weak self] response in
+            guard response == .alertSecondButtonReturn else { return }
+            DispatchQueue.main.async { self?.removeCurrentPage(index) }
+        }
+    }
+
+    func removeCurrentPage(_ index: Int) {
+        guard editing, index == store.currentPage, store.pageCount > 1 else { return }
+        let neighbor = index == 0 ? 1 : index - 1
+        selectPage(neighbor)
+        guard store.currentPage == neighbor else { return }
+        store.removePage(index)
+        presentedPage = store.currentPage
+        parkedCanvases.removeAll { $0.index == index }
+        for i in parkedCanvases.indices where parkedCanvases[i].index > index { parkedCanvases[i].index -= 1 }
+        var remaining: [String: DisplayLayout] = [:]
+        for (key, layout) in ephemeralLayouts {
+            let parts = key.split(separator: ".", maxSplits: 1)
+            guard parts.count == 2, let page = Int(parts[0]), page != index else { continue }
+            remaining["\(page > index ? page - 1 : page).\(parts[1])"] = layout
+        }
+        ephemeralLayouts = remaining
+        layoutChrome()
+        NotificationCenter.default.post(name: .meetingBadgeChanged, object: nil)
+    }
+
+    func movePage(_ source: Int, to destination: Int) {
+        guard editing, dialog == nil, panel.attachedSheet == nil, source != destination,
+              (0..<store.pageCount).contains(source), (0..<store.pageCount).contains(destination) else { return }
+        persist()
+        let order = store.movePage(source, to: destination)
+        let positions = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element, $0.offset) })
+        for i in parkedCanvases.indices {
+            if let position = positions[parkedCanvases[i].index] { parkedCanvases[i].index = position }
+        }
+        var remapped: [String: DisplayLayout] = [:]
+        for (key, layout) in ephemeralLayouts {
+            let parts = key.split(separator: ".", maxSplits: 1)
+            if parts.count == 2, let old = Int(parts[0]), let position = positions[old] {
+                remapped["\(position).\(parts[1])"] = layout
+            }
+        }
+        ephemeralLayouts = remapped
+        presentedPage = store.currentPage
+        layoutChrome()
+    }
+
+    private func pageActions(_ dot: EditablePageDot) {
+        let page = dot.page
+        let menu = NSMenu()
+        menu.addItem(withTitle: "ページ \(page + 1)" + (page == store.currentPage ? "（表示中）" : ""), action: nil, keyEquivalent: "")
+        menu.addItem(.separator())
+        func add(_ title: String, _ action: Selector) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.tag = page
+            item.target = self
+        }
+        if page != store.currentPage { add("このページを開く", #selector(openPageItem(_:))) }
+        if page > 0 { add("左へ移動", #selector(movePageLeft(_:))) }
+        if page + 1 < store.pageCount { add("右へ移動", #selector(movePageRight(_:))) }
+        if store.pageCount > 1 {
+            menu.addItem(.separator())
+            add("ページ \(page + 1) 全体を削除…", #selector(removePageItem(_:)))
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: dot.bounds.maxY + 4), in: dot)
+    }
+    @objc private func openPageItem(_ item: NSMenuItem) { selectPage(item.tag) }
+    @objc private func movePageLeft(_ item: NSMenuItem) { movePage(item.tag, to: item.tag - 1) }
+    @objc private func movePageRight(_ item: NSMenuItem) { movePage(item.tag, to: item.tag + 1) }
+    @objc private func removePageItem(_ item: NSMenuItem) {
+        selectPage(item.tag)
+        if store.currentPage == item.tag { confirmPageRemoval() }
+    }
+
+    private func layoutPageBar() {
+        let count = store.pageCount, index = store.currentPage
+        pageBar.isHidden = state == .hidden || (count == 1 && !editing)
+        guard !pageBar.isHidden else { return }
+        let signature = "\(index)/\(count)/\(editing)"
+        if signature != pageBarState {
+            pageBarState = signature
+            for view in pageBar.arrangedSubviews { pageBar.removeArrangedSubview(view); view.removeFromSuperview() }
+            pageBar.orientation = .horizontal; pageBar.spacing = 0
+            pageBar.edgeInsets = NSEdgeInsets(top: 1, left: 6, bottom: 1, right: 6)
+            pageBar.wantsLayer = true; pageBar.layer?.cornerRadius = 12
+            pageBar.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.68).cgColor
+            let start = max(0, min(index - 4, count - 9))
+            for page in start..<min(count, start + 9) {
+                if editing {
+                    let dot = EditablePageDot(page: page, selected: page == index)
+                    dot.move = { [weak self] source, destination in self?.movePage(source, to: destination) }
+                    dot.openMenu = { [weak self] dot in self?.pageActions(dot) }
+                    dot.widthAnchor.constraint(equalToConstant: 28).isActive = true
+                    pageBar.addArrangedSubview(dot)
+                    continue
+                }
+                let button = ActionButton(page == index ? "●" : "○") { [weak self] in self?.selectPage(page) }
+                button.isBordered = false; button.contentTintColor = .white
+                button.setAccessibilityLabel("ページ \(page + 1) / \(count)")
+                button.toolTip = "ページ \(page + 1) / \(count)"
+                button.widthAnchor.constraint(equalToConstant: 22).isActive = true
+                pageBar.addArrangedSubview(button)
+            }
+            if editing {
+                let add = ActionButton("＋") { [weak self] in
+                    guard let self, self.editing else { return }
+                    self.selectPage(self.store.appendPage())
+                }
+                add.isBordered = false; add.contentTintColor = .white; add.toolTip = "ページを追加"
+                add.setAccessibilityLabel("ページを追加"); pageBar.addArrangedSubview(add)
+            }
+        }
+        let size = pageBar.fittingSize
+        pageBar.frame = CGRect(x: root.bounds.midX - size.width/2, y: editing ? 106 : 4, width: size.width, height: max(24, size.height))
+        root.addSubview(pageBar, positioned: dialog == nil ? .above : .below, relativeTo: dialog)
+    }
+
     func layoutChrome() {
+        layoutPageBar()
         let width: CGFloat = 432
         toolbar.frame = NSRect(x: root.bounds.midX-width/2, y: 24, width: width, height: editing ? 80 : 56)
         toolbar.isHidden = state != .pinned || !editing
@@ -806,7 +1046,7 @@ final class OverlayController {
         let view = PanelView(record: record, websiteDataStore: websiteDataStore, fileReadAccessRoot: documentStorage.resourceRoot(for: record.url), weatherProvider: weatherProvider); views[record.id] = view; root.addSubview(view)
         view.browser.hideFromScreenCapture = store.hideFromScreenCapture
         view.setWeatherShowsHourly(store.weatherShowsHourly)
-        view.setWebDisplayMode(store.webDisplayMode)
+        view.setWebDisplayMode(record.webDisplayMode ?? store.webDisplayMode)
         view.applyVisibility(VisibilityPlan(state: state, peekAllowsInteraction: store.peekAllowsInteraction))
         view.setEditing(editing)
         view.canEditContent = documentStorage.owns(record.url)
@@ -825,7 +1065,17 @@ final class OverlayController {
             switch command {
             case 0: self.touch(record.id); view.reloadContent()
             case 1: SlackLinks.open(view.web?.url ?? view.url)
-            case 2: self.add(view.web?.url ?? view.url)
+            case 2:
+                let mode = self.records.first(where: { $0.id == record.id })?.webDisplayMode ?? self.store.webDisplayMode
+                self.add(view.web?.url ?? view.url, mode: mode)
+            case 25:
+                guard let current = self.records.first(where: { $0.id == record.id }) else { return }
+                self.closeDialog()
+                self.editingWebPanel = true
+                self.presentDialog(WebPanelSettings(address: current.url.absoluteString, mode: current.webDisplayMode ?? self.store.webDisplayMode, save: { [weak self] url, mode in
+                    self?.closeDialog()
+                    self?.updateWebPanel(current.id, url: url, mode: mode)
+                }, cancel: { [weak self] in self?.closeDialog() }), size: NSSize(width: 440, height: 205))
             case 4:
                 guard self.documentStorage.owns(view.url) else { return }
                 self.documentPrompt(kind: view.url.pathExtension == "html" ? .html : .text, existing: view)
@@ -833,6 +1083,25 @@ final class OverlayController {
             }
         }
     }
+    func updateWebPanel(_ id: UUID, url: URL, mode: WebDisplayMode) {
+        guard editing, let index = records.firstIndex(where: { $0.id == id }), let view = views[id],
+              ["http", "https"].contains(view.url.scheme?.lowercased()), EventLinks.isWebURL(url) else { return }
+        records[index].webDisplayMode = mode
+        if records[index].url != url {
+            let frame = view.frame
+            view.navigated = nil
+            view.removeFromSuperview()
+            records[index].url = url
+            install(records[index])
+            views[id]?.frame = frame
+            reconcile()
+            layoutChrome()
+        } else {
+            view.setWebDisplayMode(mode)
+        }
+        persist()
+    }
+
     private func reconcile() {
         // Native widgets are cheap views, not part of the four-WebView limit.
         for view in views.values where WidgetSpec(url: view.url) != nil { view.wake() }
@@ -852,12 +1121,12 @@ final class OverlayController {
             let record = records.remove(at: index); records.append(record); persist()
         }
     }
-    func add(_ url: URL, at target: CGRect? = nil) {
+    func add(_ url: URL, at target: CGRect? = nil, mode: WebDisplayMode = .desktop) {
         guard editing else { return }
         guard records.count < PanelPool.maximum else { NSSound.beep(); return }
         let originals = views.mapValues { $0.frame }
         let frame = target ?? PanelPacking(screen: root.bounds.size).initial(others: Array(originals.values))
-        let record = PanelRecord(url: url, placement: FractionalFrame(frame: frame, screen: root.bounds.size))
+        let record = PanelRecord(url: url, placement: FractionalFrame(frame: frame, screen: root.bounds.size), webDisplayMode: ["https", "http"].contains(url.scheme?.lowercased()) ? mode : nil)
         records.append(record); install(record); if WidgetSpec(url: record.url) == nil { pool.add(record.id) }
         placementPreview = (record.id, originals, nil)
         let placed = previewPlacement(record.id, target: frame)
@@ -873,7 +1142,7 @@ final class OverlayController {
             guard let self, self.showingGallery, self.galleryDrag == nil else { return }
             self.closeDialog()
             self.addSource(tag)
-        }, drag: { [weak self] tag, ended in self?.dragGalleryCard(tag, ended: ended) }, close: { [weak self] in self?.closeDialog() }), size: NSSize(width: 720, height: 620))
+        }, drag: { [weak self] tag, ended in self?.dragGalleryCard(tag, ended: ended) }, close: { [weak self] in self?.closeDialog() }), size: NSSize(width: 850, height: 680))
     }
     private func dragGalleryCard(_ tag: Int, ended: Bool) {
         guard editing, showingGallery, let dialog else { return }
@@ -1041,14 +1310,16 @@ final class OverlayController {
     }
     private func persist() {
         guard let display = activeDisplay else { return }
+        guard presentedPage == store.currentPage else { return }
         let layout = displayedLayout()
         records = layout.panels
         // Web navigation callbacks can arrive after the settings toggle but before show.
         guard activeShared == store.sameLayoutOnAllDisplays else { return }
-        if !activeShared && display.hasPrefix("ephemeral:") { ephemeralLayouts[display] = layout }
+        if !activeShared && display.hasPrefix("ephemeral:") { ephemeralLayouts[ephemeralKey(display)] = layout }
         else { store.savePresentedLayout(layout, for: display, wasFitted: presentationWasFitted) }
     }
     deinit {
+        memoryPressure.cancel()
         monitorOutsideInteraction(false)
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }

@@ -17,7 +17,7 @@ func renderPreviews(directory: URL) throws {
             store.method = state == "guide-permission" ? .eventTap : .carbon
             let guide = FirstRunGuideView(shortcut: store.shortcut, method: store.method)
             guide.frame.origin = NSPoint(x: 590, y: 384); root.addSubview(guide)
-            let caption = label("Scrim 1.0.0 (9) · TASK-OVERLAY-007 開発中 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
+            let caption = label("Scrim \(ReleaseUpdater.version) (\(ReleaseUpdater.build)) · TASK-OVERLAY-007 開発中 · 旧ガイドの検証専用（現在の初回起動では表示されません）", size: 16)
             caption.frame = NSRect(x: 180, y: 1060, width: 1440, height: 40); root.addSubview(caption)
         } else if state == "settings" || state == "hotkey-error" {
             let store = SettingsStore(storage: MemorySettingsStorage())
@@ -75,7 +75,7 @@ private func renderEntryReview(directory: URL, appearance: NSAppearance, theme: 
     root.appearance = appearance; root.wantsLayer = true; root.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
     let host = NSWindow(contentRect: root.frame, styleMask: .borderless, backing: .buffered, defer: false)
     host.appearance = appearance; host.contentView = root; host.isReleasedWhenClosed = false
-    let caption = NSTextField(labelWithString: "Scrim 1.0.0 (9) · TASK-OVERLAY-007 開発中 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
+    let caption = NSTextField(labelWithString: "Scrim \(ReleaseUpdater.version) (\(ReleaseUpdater.build)) · TASK-OVERLAY-007 開発中 · \(theme) · \(state) · プレビュー（実際のメニューバー表示ではありません）")
     caption.textColor = .secondaryLabelColor; caption.frame = NSRect(x: 50, y: 1210, width: 1650, height: 30); root.addSubview(caption)
     let store = SettingsStore(storage: MemorySettingsStorage())
     store.sameLayoutOnAllDisplays = state != "layout-off"
@@ -174,7 +174,7 @@ private func renderFileReviews(directory: URL) throws {
             view.frame = record.placement.restore(screen: root.bounds.size)
             root.addSubview(view); view.applyVisibility(VisibilityPlan(state: .pinned))
             view.wake(); view.needsLayout = true; root.layoutSubtreeIfNeeded()
-            let caption = NSTextField(labelWithString: "Scrim 1.0.0 (9) · Local " + kind + " · " + theme)
+            let caption = NSTextField(labelWithString: "Scrim \(ReleaseUpdater.version) (\(ReleaseUpdater.build)) · Local " + kind + " · " + theme)
             caption.textColor = .white
             caption.frame = NSRect(x: 60, y: 690, width: 880, height: 30); root.addSubview(caption)
             if kind == "pdf" {

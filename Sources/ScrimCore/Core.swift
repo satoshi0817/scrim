@@ -173,7 +173,10 @@ public enum Placement {
 }
 public struct PanelRecord: Codable, Identifiable {
     public var id: UUID; public var url: URL; public var placement: FractionalFrame
-    public init(id: UUID = UUID(), url: URL, placement: FractionalFrame) { self.id = id; self.url = url; self.placement = placement }
+    public var webDisplayMode: WebDisplayMode?
+    public init(id: UUID = UUID(), url: URL, placement: FractionalFrame, webDisplayMode: WebDisplayMode? = nil) {
+        self.id = id; self.url = url; self.placement = placement; self.webDisplayMode = webDisplayMode
+    }
 }
 public struct PanelPool {
     public static let liveLimit = 4
@@ -246,14 +249,76 @@ public final class SettingsStore {
     public var agendaResetsScrollOnOpen: Bool { get { read("agendaResetsScrollOnOpen", fallback: true) } set { write(newValue, "agendaResetsScrollOnOpen") } }
     public var peekAllowsInteraction: Bool { get { read("peekAllowsInteraction", fallback: true) } set { write(newValue, "peekAllowsInteraction") } }
     public var calendarReturnsToToday: Bool { get { read("calendarReturnsToToday", fallback: true) } set { write(newValue, "calendarReturnsToToday") } }
-    public var panels: [PanelRecord] { get { read("panels", fallback: []) } set { write(newValue, "panels") } }
+    // NSEvent's device-independent Shift, Control, Option and Command bits.
+    public var pageArrowModifiers: UInt {
+        get { read("pageArrowModifiers", fallback: UInt(0x180000)) }
+        set { if newValue != 0 && newValue & ~UInt(0x1e0000) == 0 { write(newValue, "pageArrowModifiers") } }
+    }
+    public var pageCount: Int { max(1, read("canvasPageCount", fallback: 1)) }
+    public var currentPage: Int {
+        get { min(pageCount - 1, max(0, read("canvasPage", fallback: 0))) }
+        set { write(min(pageCount - 1, max(0, newValue)), "canvasPage") }
+    }
+    public func appendPage() -> Int {
+        let index = pageCount
+        // Always initialize this slot, including an index reused after a page reset.
+        write([PanelRecord](), pageKey("panels", page: index))
+        write([String: DisplayLayout](), pageKey("layoutsByDisplay", page: index))
+        storage.setData(nil, forKey: pageKey("sharedLayoutReferenceSize", page: index))
+        write(index + 1, "canvasPageCount")
+        return index
+    }
+    /// Returns original indices in their new order so in-memory sessions follow the same move.
+    public func movePage(_ source: Int, to destination: Int) -> [Int] {
+        var order = Array(0..<pageCount)
+        guard source != destination, order.indices.contains(source), order.indices.contains(destination) else { return order }
+        let selected = currentPage
+        order.insert(order.remove(at: source), at: destination)
+        for key in ["panels", "layoutsByDisplay", "sharedLayoutReferenceSize"] {
+            let values = order.map { storage.data(forKey: pageKey(key, page: $0)) }
+            for (index, value) in values.enumerated() where index != order[index] {
+                storage.setData(value, forKey: pageKey(key, page: index))
+            }
+        }
+        currentPage = order.firstIndex(of: selected)!
+        return order
+    }
+
+    public func removePage(_ index: Int) {
+        let count = pageCount, selected = currentPage
+        guard count > 1, (0..<count).contains(index) else { return }
+        for page in index..<count {
+            for key in ["panels", "layoutsByDisplay", "sharedLayoutReferenceSize"] {
+                let next = page + 1 < count ? storage.data(forKey: pageKey(key, page: page + 1)) : nil
+                storage.setData(next, forKey: pageKey(key, page: page))
+            }
+        }
+        write(count - 1, "canvasPageCount")
+        currentPage = selected > index ? selected - 1 : min(selected, count - 2)
+    }
+
+    private func pageKey(_ key: String, page: Int? = nil) -> String {
+        let index = page ?? currentPage
+        return index == 0 ? key : "page.\(index).\(key)"
+    }
+    public func panelsAcrossPages(display: String) -> [PanelRecord] {
+        (0..<pageCount).flatMap { index -> [PanelRecord] in
+            if !sameLayoutOnAllDisplays {
+                let layouts: [String: DisplayLayout] = read(pageKey("layoutsByDisplay", page: index), fallback: [:])
+                if let layout = layouts[display] { return layout.panels }
+            }
+            return read(pageKey("panels", page: index), fallback: [])
+        }
+    }
+
+    public var panels: [PanelRecord] { get { read(pageKey("panels"), fallback: []) } set { write(newValue, pageKey("panels")) } }
     public var sameLayoutOnAllDisplays: Bool { get { read("sameLayoutOnAllDisplays", fallback: true) } set { write(newValue, "sameLayoutOnAllDisplays") } }
     public var showsOverlayControls: Bool { get { read("showsOverlayControls", fallback: false) } set { write(newValue, "showsOverlayControls") } }
     public var sharedLayoutReferenceSize: CGSize? {
-        get { read("sharedLayoutReferenceSize", fallback: Optional<LayoutSize>.none)?.size }
-        set { write(newValue.map { LayoutSize($0) }, "sharedLayoutReferenceSize") }
+        get { read(pageKey("sharedLayoutReferenceSize"), fallback: Optional<LayoutSize>.none)?.size }
+        set { write(newValue.map { LayoutSize($0) }, pageKey("sharedLayoutReferenceSize")) }
     }
-    public var layoutsByDisplay: [String: DisplayLayout] { get { read("layoutsByDisplay", fallback: [:]) } set { write(newValue, "layoutsByDisplay") } }
+    public var layoutsByDisplay: [String: DisplayLayout] { get { read(pageKey("layoutsByDisplay"), fallback: [:]) } set { write(newValue, pageKey("layoutsByDisplay")) } }
     public var guided: Bool { get { Self.isGuidedTrue(storage.object(forKey: "guided")) } set { write(newValue, "guided") } }
     private static func isGuidedTrue(_ value: Any?) -> Bool {
         if let data = value as? Data {

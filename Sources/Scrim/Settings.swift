@@ -47,6 +47,16 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
     var recordingCancelled: (() -> Void)?
     private(set) var recordingSession: ShortcutRecordingSession
     var isRecording: Bool { recordingSession.isActive }
+    private(set) var recordingPageKeys = false
+    private var heldPageKeys: NSEvent.ModifierFlags = []
+    private(set) var pendingPageKeys: NSEvent.ModifierFlags = []
+    var recordingAnyKeys: Bool { isRecording || recordingPageKeys }
+    var pageKeyLabel: String {
+        let flags = recordingPageKeys ? pendingPageKeys : NSEvent.ModifierFlags(rawValue: store.pageArrowModifiers)
+        if flags.isEmpty { return "キー入力待ち…" }
+        return [flags.contains(.control) ? "⌃" : "", flags.contains(.option) ? "⌥" : "",
+                flags.contains(.shift) ? "⇧" : "", flags.contains(.command) ? "⌘" : ""].joined() + " ＋ ←／→"
+    }
     weak var embeddedWindow: NSWindow?
     private var presentationWindow: NSWindow { embeddedWindow ?? window }
     func finishEmbedded() {
@@ -151,6 +161,38 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
         guard value.isFinite, value > 0, value <= 2 else { refresh(); return }
         updateGesture { $0[keyPath: keyPath] = value }
     }
+    func beginPageKeyRecording() {
+        cancelRecording(silent: true)
+        recordingPageKeys = true
+        recordingBegan?()
+        refresh()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] event in
+            guard let self, self.recordingPageKeys, event.window === self.presentationWindow else { return event }
+            self.recordPageKey(event)
+            return nil
+        }
+    }
+    func recordPageKey(_ event: NSEvent) {
+        guard recordingPageKeys else { return }
+        let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        if event.type == .keyDown {
+            if event.keyCode == 53 { cancelRecording(); return }
+            if [123, 124].contains(event.keyCode), !flags.isEmpty {
+                store.pageArrowModifiers = flags.rawValue
+                cancelRecording()
+            } else {
+                pendingPageKeys = []
+                refresh()
+            }
+            return
+        }
+        if !flags.subtracting(heldPageKeys).isEmpty { pendingPageKeys = flags }
+        heldPageKeys = flags
+        if flags.isEmpty, !pendingPageKeys.isEmpty {
+            store.pageArrowModifiers = pendingPageKeys.rawValue
+            cancelRecording()
+        } else { refresh() }
+    }
     func resetShortcut() { beginRecording(); receiveShortcut(.default) }
     func beginRecording(installMonitor: Bool = true) {
         cancelRecording(silent: true)
@@ -181,7 +223,10 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
         refresh()
     }
     func cancelRecording(silent: Bool = false) {
-        let wasActive = isRecording
+        let wasActive = recordingAnyKeys
+        recordingPageKeys = false
+        heldPageKeys = []
+        pendingPageKeys = []
         removeRecordingMonitor()
         if silent { recordingSession = ShortcutRecordingSession(savedShortcut: store.shortcut) }
         else if isRecording { recordingSession.cancel() }
@@ -197,7 +242,7 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
         cancelRecording(); closePermissionCard()
     }
     func windowDidBecomeKey(_ notification: Notification) { refresh() }
-    func windowDidResignKey(_ notification: Notification) { if isRecording { cancelRecording() } }
+    func windowDidResignKey(_ notification: Notification) { if recordingAnyKeys { cancelRecording() } }
     private func requestModifierPermission() { presentGesturePermission() }
     func presentGesturePermission() {
         let initiallyGranted = permissionState()

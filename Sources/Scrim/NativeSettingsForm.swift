@@ -28,6 +28,37 @@ enum NativeSettingsPage: CaseIterable {
     }
 }
 
+private struct SettingsDisclosureStyle: DisclosureGroupStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+                    configuration.isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                        .accessibilityHidden(true)
+                    configuration.label
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(configuration.isExpanded ? "展開中" : "折りたたみ")
+            if configuration.isExpanded {
+                VStack(alignment: .leading, spacing: 8) { configuration.content }
+                    .padding(.leading, 18)
+            }
+        }
+    }
+}
+
 struct NativeSettingsForm: View {
     @ObservedObject var controller: SettingsController
     let page: NativeSettingsPage
@@ -47,6 +78,7 @@ struct NativeSettingsForm: View {
             }
         }
         .formStyle(.grouped)
+        .disclosureGroupStyle(SettingsDisclosureStyle())
         .frame(minWidth: 600, idealWidth: 640, maxWidth: .infinity, minHeight: 480, idealHeight: 540, maxHeight: .infinity)
     }
 
@@ -81,7 +113,7 @@ struct NativeSettingsForm: View {
                 Text("対応するキャプチャ方式でのみ有効です。現在のmacOSや共有アプリでは表示される場合があるため、共有先で事前に確認してください。撮影するときはオフにできます。")
             }
             Section {
-                LabeledContent("バージョン", value: "1.0.0 (9)")
+                ReleaseSettings()
             } header: { Text("Scrim") }
         }
         .toggleStyle(.switch)
@@ -89,6 +121,21 @@ struct NativeSettingsForm: View {
 
     private var input: some View {
         Group {
+            Section("ページ移動") {
+                HStack {
+                    Text("←／→と組み合わせるキー")
+                    Spacer()
+                    Text(controller.pageKeyLabel).monospaced()
+                    Button(controller.recordingPageKeys ? "キャンセル" : "記録…") {
+                        if controller.recordingPageKeys { controller.cancelRecording() }
+                        else { controller.beginPageKeyRecording() }
+                    }.disabled(controller.isRecording)
+                }
+                if controller.recordingPageKeys {
+                    Text("⌘・⌥・⌃・⇧を好きな組み合わせで押し、すべて離すと保存します。Escでキャンセルできます。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }.onDisappear { if controller.recordingPageKeys { controller.cancelRecording() } }
             Section {
                 HStack {
                     Text("ショートカット")
@@ -136,7 +183,7 @@ struct NativeSettingsForm: View {
                     }
                 }
             } header: { Text("ダブルプレス") } footer: {
-                Text("2回目を押している間はのぞき見、短く離すと固定します。入力監視が未許可でも \(store.shortcut.displayString) を使えます。")
+                Text("2回目を押している間はのぞき見、短く2回押すと固定表示を開閉します。入力監視が未許可でも \(store.shortcut.displayString) を使えます。")
             }
             .toggleStyle(.switch)
             .disabled(controller.isRecording)
@@ -198,14 +245,6 @@ struct NativeSettingsForm: View {
             } header: { Text("天気") } footer: {
                 Text("時間ごとの気温・天気・降雨確率はwttr.in / WorldWeatherOnline、現在の観測値と日々の予報は気象庁を利用します。")
             }.toggleStyle(.switch)
-            Section {
-                Picker("表示モード", selection: Binding(get: { store.webDisplayMode }, set: controller.setWebDisplayMode)) {
-                    Text("PC表示").tag(WebDisplayMode.desktop)
-                    Text("スマホ表示").tag(WebDisplayMode.mobile)
-                }.pickerStyle(.segmented)
-            } header: { Text("Webパネル") } footer: {
-                Text("スマホ表示ではWebページを狭い幅で表示します。サイトによってはスマホ用ページに切り替わります。")
-            }
             Section {
                 Toggle("表示するときに今日へ戻す", isOn: Binding(get: { store.calendarReturnsToToday }, set: controller.setCalendarReturnsToToday))
             } header: { Text("Webカレンダー") } footer: {

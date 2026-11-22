@@ -1,4 +1,5 @@
 import SwiftUI
+import ScrimCore
 
 enum OverlayAction: Int, CaseIterable {
     case edit, settings
@@ -54,6 +55,37 @@ struct OverlaySettingsForm: View {
 final class OverlayDialogBackdrop: NSView {
     var close: (() -> Void)?
     override var acceptsFirstResponder: Bool { true }
-    override func mouseDown(with event: NSEvent) { close?() }
+    weak var dialogContent: NSView?
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if let dialogContent, dialogContent.frame.contains(point) { return }
+        close?()
+    }
     override func scrollWheel(with event: NSEvent) {}
+}
+
+struct WebPanelSettings: View {
+    @State var address: String
+    @State var mode: WebDisplayMode
+    let save: (URL, WebDisplayMode) -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Webパネル設定").font(.title2.bold())
+            TextField("URL", text: $address).textFieldStyle(.roundedBorder)
+            Picker("表示モード", selection: $mode) {
+                Text("PC表示").tag(WebDisplayMode.desktop)
+                Text("スマホ表示").tag(WebDisplayMode.mobile)
+            }.pickerStyle(.segmented)
+            HStack {
+                Spacer()
+                Button("キャンセル", action: cancel)
+                Button("保存") {
+                    if let url = SettingsStore.normalize(address) { save(url, mode) }
+                }.keyboardShortcut(.defaultAction).disabled(SettingsStore.normalize(address) == nil)
+            }
+        }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
 }
