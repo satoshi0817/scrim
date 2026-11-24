@@ -230,8 +230,8 @@ public final class SettingsStore {
     private let storage: SettingsStorage
     public init(storage: SettingsStorage) { self.storage = storage }
     public convenience init(defaults: UserDefaults) { self.init(storage: defaults) }
-    private func read<T: Decodable>(_ key: String, fallback: T) -> T { guard let data = storage.data(forKey: key), let value = try? JSONDecoder().decode(T.self, from: data) else { return fallback }; return value }
-    private func write<T: Encodable>(_ value: T, _ key: String) { storage.setData(try? JSONEncoder().encode(value), forKey: key) }
+    func read<T: Decodable>(_ key: String, fallback: T) -> T { guard let data = storage.data(forKey: key), let value = try? JSONDecoder().decode(T.self, from: data) else { return fallback }; return value }
+    func write<T: Encodable>(_ value: T, _ key: String) { storage.setData(try? JSONEncoder().encode(value), forKey: key) }
     public var gesture: GestureSettings { get { read("doublePress", fallback: GestureSettings()) } set { write(newValue, "doublePress") } }
     public var gesturePermissionDeferred: Bool { get { read("gesturePermissionDeferred", fallback: false) } set { write(newValue, "gesturePermissionDeferred") } }
     public var gesturePermissionAsked: Bool { get { read("gesturePermissionAsked", fallback: false) } set { write(newValue, "gesturePermissionAsked") } }
@@ -248,6 +248,9 @@ public final class SettingsStore {
     public var appearanceMode: AppearanceMode { get { read("appearanceMode", fallback: .system) } set { write(newValue, "appearanceMode") } }
     public var agendaResetsScrollOnOpen: Bool { get { read("agendaResetsScrollOnOpen", fallback: true) } set { write(newValue, "agendaResetsScrollOnOpen") } }
     public var peekAllowsInteraction: Bool { get { read("peekAllowsInteraction", fallback: true) } set { write(newValue, "peekAllowsInteraction") } }
+    public var notionTextSize: NotionTextSize { get { read("notionTextSize", fallback: .standard) } set { write(newValue, "notionTextSize") } }
+    /// Swap web panels for snapshots after the overlay has been hidden for a while, to free memory.
+    public var releasesIdleWebPanels: Bool { get { read("releasesIdleWebPanels", fallback: true) } set { write(newValue, "releasesIdleWebPanels") } }
     public var calendarReturnsToToday: Bool { get { read("calendarReturnsToToday", fallback: true) } set { write(newValue, "calendarReturnsToToday") } }
     // NSEvent's device-independent Shift, Control, Option and Command bits.
     public var pageArrowModifiers: UInt {
@@ -297,22 +300,20 @@ public final class SettingsStore {
         currentPage = selected > index ? selected - 1 : min(selected, count - 2)
     }
 
-    private func pageKey(_ key: String, page: Int? = nil) -> String {
+    func pageKey(_ key: String, page: Int? = nil) -> String {
         let index = page ?? currentPage
         return index == 0 ? key : "page.\(index).\(key)"
     }
-    public func panelsAcrossPages(display: String) -> [PanelRecord] {
-        (0..<pageCount).flatMap { index -> [PanelRecord] in
-            if !sameLayoutOnAllDisplays {
-                let layouts: [String: DisplayLayout] = read(pageKey("layoutsByDisplay", page: index), fallback: [:])
-                if let layout = layouts[display] { return layout.panels }
-            }
-            return read(pageKey("panels", page: index), fallback: [])
-        }
+    /// Panel content is shared by every display, so this is the same for all of them.
+    public func panelsAcrossPages() -> [PanelRecord] {
+        (0..<pageCount).flatMap { index -> [PanelRecord] in read(pageKey("panels", page: index), fallback: []) }
     }
 
     public var panels: [PanelRecord] { get { read(pageKey("panels"), fallback: []) } set { write(newValue, pageKey("panels")) } }
+    /// Raw flag. Use `setSameLayoutOnAllDisplays(_:)` to switch modes and carry the arrangement over.
     public var sameLayoutOnAllDisplays: Bool { get { read("sameLayoutOnAllDisplays", fallback: true) } set { write(newValue, "sameLayoutOnAllDisplays") } }
+    /// Display keys where the overlay never opens. Displays not listed (including new ones) are enabled.
+    public var disabledDisplays: Set<String> { get { Set(read("disabledDisplays", fallback: [String]())) } set { write(newValue.sorted(), "disabledDisplays") } }
     public var showsOverlayControls: Bool { get { read("showsOverlayControls", fallback: false) } set { write(newValue, "showsOverlayControls") } }
     public var sharedLayoutReferenceSize: CGSize? {
         get { read(pageKey("sharedLayoutReferenceSize"), fallback: Optional<LayoutSize>.none)?.size }

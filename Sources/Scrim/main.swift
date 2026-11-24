@@ -44,6 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.layoutsByDisplay = layouts
         }
         store.normalizeWebLaunchURLs()
+        store.shareLegacyDisplayContent()
+        // Only the running app reads the Keychain; verification runs keep the empty in-memory store.
+        NotionEnvironment.current = NotionEnvironment(tokens: KeychainNotionTokenStore(), baseURL: NotionAPI.baseURL)
+        NotionAppearance.shared.textSize = store.notionTextSize
         overlay = OverlayController(store: store); settings = SettingsController(store: store)
         meetingBadge = MeetingNotchBadge(store: store)
         overlay.isSettingsKey = { [weak self] in self?.settings.window.isKeyWindow ?? false }
@@ -128,7 +132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
-    func apply() { overlay.show(machine.state) }
+    /// Gestures and shortcuts are ignored on displays with the overlay turned off; menu actions are `explicit`.
+    func apply(explicit: Bool = false) {
+        if !overlay.show(machine.state, explicit: explicit) { machine.dismiss() }
+    }
     private func fileOpenItem() -> NSMenuItem {
         let item = NSMenuItem(title: "ファイルを開く…", action: #selector(openFilePanel), keyEquivalent: "o")
         item.keyEquivalentModifierMask = [.command]; item.target = self; return item
@@ -162,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openingFiles = true; settings.cancelRecording(); settings.window.orderOut(nil)
         machine.pin()
         // Re-select the pointer display before adding, even when already pinned.
-        overlay.show(.hidden, immediately: true); apply()
+        overlay.show(.hidden, immediately: true); apply(explicit: true)
         overlay.setEditing(true)
         for url in urls { overlay.add(url) }
         DispatchQueue.main.async { [weak self] in self?.openingFiles = false }
@@ -178,15 +185,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registrationItem.title = entry.failureMessage ?? ""; registrationItem.isHidden = !entry.showsWarning
         item.button?.title = ""; item.button?.image = StatusIcon.image(warning: entry.showsWarning)
     }
-    @objc private func openOverlay() { settings.cancelRecording(); machine.pin(); apply() }
+    @objc private func openOverlay() { settings.cancelRecording(); machine.pin(); apply(explicit: true) }
     @objc private func editLayout() {
         settings.cancelRecording(); settings.window.orderOut(nil)
-        machine.pin(); apply(); overlay.setEditing(true)
+        machine.pin(); apply(explicit: true); overlay.setEditing(true)
     }
     @objc func openSettings() {
         guard settings != nil else { return }
         gestureInput.cancelPendingGesture()
-        machine.pin(); apply(); NSApp.activate(ignoringOtherApps: true); overlay.presentSettings(settings)
+        machine.pin(); apply(explicit: true); NSApp.activate(ignoringOtherApps: true); overlay.presentSettings(settings)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !openingFiles { openSettings() }
@@ -197,7 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 let supportedOptions: Set<String> = ["--peek-review", "--verify-panel-behavior", "--verify-fades", "--verify-widgets", "--widgets-review", "--verify-input-monitoring", "--verify-content",
-    "--verify-settings", "--settings-review", "--inspect-calendar-login", "--verify-interactions", "--interaction-review", "--render-previews"]
+    "--verify-settings", "--settings-review", "--inspect-calendar-login", "--verify-interactions", "--interaction-review", "--render-previews",
+    "--verify-notion-tasks", "--verify-panel-menu"]
 if CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--") && !supportedOptions.contains($0) }) {
     fputs("Unsupported command-line option.\n", stderr); exit(2)
 }
@@ -263,6 +271,18 @@ if CommandLine.arguments.contains("--settings-review") {
 if CommandLine.arguments.contains("--inspect-calendar-login") {
     do { try inspectCalendarLogin() }
     catch { fputs("Calendar inspection failed: \(error)\n", stderr); exit(1) }
+    exit(0)
+}
+if CommandLine.arguments.contains("--verify-panel-menu") {
+    do { try MainActor.assumeIsolated { try verifyPanelMenuClicks() } }
+    catch { fputs("Panel menu verification failed: \(error)\n", stderr); exit(1) }
+    exit(0)
+}
+if let index = CommandLine.arguments.firstIndex(of: "--verify-notion-tasks") {
+    guard index+1 < CommandLine.arguments.count, let fixture = URL(string: CommandLine.arguments[index+1]),
+          fixture.host == "127.0.0.1" else { fputs("Provide a local Notion fixture URL\n", stderr); exit(2) }
+    do { try MainActor.assumeIsolated { try verifyNotionTasks(fixture: fixture) } }
+    catch { fputs("Notion task verification failed: \(error)\n", stderr); exit(1) }
     exit(0)
 }
 if let index = CommandLine.arguments.firstIndex(of: "--verify-interactions") {

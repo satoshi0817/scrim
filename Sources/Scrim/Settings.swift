@@ -116,6 +116,7 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
         }
         window.contentViewController = tabs
         window.setContentSize(NSSize(width: 640, height: 540))
+        NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         #if DEBUG || TRIAL_DIAGNOSTICS
         timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             guard let self, self.window.isVisible, self.tabs.selectedTabViewItemIndex == NativeSettingsPage.allCases.count-1 else { return }
@@ -149,8 +150,51 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
     func setWebDisplayMode(_ value: WebDisplayMode) { store.webDisplayMode = value; changed?(); refresh() }
     func setAgendaResetsScrollOnOpen(_ value: Bool) { store.agendaResetsScrollOnOpen = value; changed?(); refresh() }
     func setPeekInteraction(_ value: Bool) { store.peekAllowsInteraction = value; changed?(); gestureChanged?(); refresh() }
+    func setReleasesIdleWebPanels(_ value: Bool) { store.releasesIdleWebPanels = value; refresh() }
+    func setNotionTextSize(_ value: NotionTextSize) {
+        store.notionTextSize = value
+        MainActor.assumeIsolated { NotionAppearance.shared.textSize = value }
+        refresh()
+    }
     func setCalendarReturnsToToday(_ value: Bool) { store.calendarReturnsToToday = value; changed?(); refresh() }
-    func setSameLayout(_ value: Bool) { store.sameLayoutOnAllDisplays = value; changed?(); refresh() }
+    func setSameLayout(_ value: Bool) { store.setSameLayoutOnAllDisplays(value); changed?(); refresh() }
+    struct DisplayChoice: Identifiable { let id: String; let name: String }
+    private let displayIdentity = DisplayIdentity()
+    /// Connected displays, keyed like the overlay keys them. Displays without a UUID cannot keep a setting.
+    var displayChoices: [DisplayChoice] {
+        NSScreen.screens.compactMap { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            return DisplayChoice(id: displayIdentity.key(for: number.uint32Value), name: screen.localizedName)
+        }
+    }
+    func setShowsOverlay(_ value: Bool, on display: String) { store.setShowsOverlay(value, on: display); refresh() }
+    struct NotionStatus: Equatable { let ok: Bool; let text: String }
+    private(set) var notionStatus: NotionStatus?
+    private(set) var notionChecking = false
+    var notionHasToken: Bool { NotionEnvironment.current.hasToken }
+    func saveNotionToken(_ token: String) {
+        guard NotionEnvironment.current.setToken(token) else {
+            notionStatus = NotionStatus(ok: false, text: "キーチェーンに保存できませんでした。"); refresh(); return
+        }
+        checkNotionToken()
+    }
+    func removeNotionToken() {
+        NotionEnvironment.current.setToken(nil)
+        notionStatus = NotionStatus(ok: true, text: "トークンを削除しました。"); refresh()
+    }
+    /// Calls the token's own user endpoint; a token that fails is kept so the user can check their connection and retry.
+    func checkNotionToken() {
+        notionChecking = true; notionStatus = nil; refresh()
+        let client = NotionEnvironment.current.client
+        Task { @MainActor [weak self] in
+            var status: NotionStatus
+            do { try await client.verify(); status = NotionStatus(ok: true, text: "Notionに接続できました。") }
+            catch { status = NotionStatus(ok: false, text: (error as? NotionAPIError ?? .network).message) }
+            guard let self else { return }
+            self.notionChecking = false; self.notionStatus = status; self.refresh()
+        }
+    }
+    @objc private func screensChanged() { refresh() }
     func updateGesture(_ update: (inout GestureSettings) -> Void) {
         let previous = store.gesture
         var gesture = previous; update(&gesture); store.gesture = gesture

@@ -139,27 +139,132 @@ final class DisplayLayoutTests: XCTestCase {
         XCTAssertEqual(store.layoutsByDisplay["uuid:b"]?.referenceSize, perDisplay.referenceSize)
         XCTAssertEqual(store.sharedLayoutReferenceSize, canvas)
     }
-    func testFirstShowCopyAndIndependentEditsSurviveReload() {
+    func testPerDisplayArrangementsShareContentAndSurviveReload() {
         let storage = MemorySettingsStorage()
         let store = SettingsStore(storage: storage)
         store.panels = layout().panels
         let shared = store.layout(for: "uuid:a", screen: canvas)
-        store.sameLayoutOnAllDisplays = false
-        let first = store.layout(for: "uuid:a", screen: canvas)
+        store.setSameLayoutOnAllDisplays(false)
+        // A display without its own arrangement looks exactly like the shared layout did on that screen.
+        let small = CGSize(width: 1200, height: 750)
+        let first = store.layout(for: "uuid:a", screen: small)
         XCTAssertEqual(first.panels.map(\.placement), shared.panels.map(\.placement))
-        let other = store.layout(for: "uuid:b", screen: canvas)
-        var edited = first; edited.panels.removeLast()
+        XCTAssertEqual(first.referenceSize, small)
+        XCTAssertEqual(LayoutFitter.frames(layout: first, screen: small), LayoutFitter.relativeFrames(layout: shared, screen: small))
+        var moved = store.layout(for: "uuid:a", screen: canvas)
+        moved.panels[0].placement = FractionalFrame(frame: CGRect(x: 40, y: 40, width: 400, height: 300), screen: canvas)
+        store.saveLayout(moved, for: "uuid:a")
+        XCTAssertEqual(store.layout(for: "uuid:a", screen: canvas).panels[0].placement, moved.panels[0].placement)
+        XCTAssertEqual(store.layout(for: "uuid:b", screen: canvas).panels[0].placement, shared.panels[0].placement)
+        XCTAssertEqual(store.panels[0].placement, shared.panels[0].placement)
+        var edited = store.layout(for: "uuid:a", screen: canvas)
+        edited.panels.removeLast()
+        edited.panels[1].url = URL(string: "https://example.invalid/changed")!
         store.saveLayout(edited, for: "uuid:a")
-        XCTAssertEqual(store.panels.count, 3)
-        XCTAssertEqual(store.layout(for: "uuid:b", screen: canvas).panels.count, other.panels.count)
-        XCTAssertEqual(store.layout(for: "uuid:a", screen: canvas).panels.count, 2)
+        let other = store.layout(for: "uuid:b", screen: canvas)
+        XCTAssertEqual(other.panels.map(\.id), edited.panels.map(\.id))
+        XCTAssertEqual(other.panels[1].url, edited.panels[1].url)
+        XCTAssertEqual(store.panels.count, 2)
         let durable = SettingsStore(storage: storage)
         XCTAssertFalse(durable.sameLayoutOnAllDisplays)
         XCTAssertEqual(durable.sharedLayoutReferenceSize, canvas)
-        XCTAssertEqual(durable.panels.map(\.id), shared.panels.map(\.id))
+        XCTAssertEqual(durable.panels.map(\.id), edited.panels.map(\.id))
         XCTAssertEqual(durable.layoutsByDisplay["uuid:a"]?.panels.map(\.id), edited.panels.map(\.id))
         XCTAssertEqual(durable.layoutsByDisplay["uuid:a"]?.referenceSize, canvas)
-        XCTAssertEqual(durable.layoutsByDisplay["uuid:b"]?.panels.map(\.id), other.panels.map(\.id))
+        XCTAssertNil(durable.layoutsByDisplay["uuid:b"])
+    }
+    func testPanelAddedOnOneDisplayJoinsOtherArrangementsAtItsFractions() {
+        let store = SettingsStore(storage: MemorySettingsStorage())
+        let base = layout(count: 2)
+        store.panels = base.panels
+        store.setSameLayoutOnAllDisplays(false)
+        var b = store.layout(for: "uuid:b", screen: canvas)
+        b.panels.reverse()
+        store.saveLayout(b, for: "uuid:b")
+        var a = store.layout(for: "uuid:a", screen: canvas)
+        let added = layout(count: 1).panels[0]
+        a.panels.append(added)
+        store.saveLayout(a, for: "uuid:a")
+        let shownOnB = store.layout(for: "uuid:b", screen: canvas)
+        XCTAssertEqual(shownOnB.panels.map(\.id), [base.panels[1].id, base.panels[0].id, added.id])
+        XCTAssertEqual(shownOnB.panels.last?.placement, added.placement)
+        XCTAssertEqual(store.panels.map(\.id), base.panels.map(\.id) + [added.id])
+    }
+    func testSwitchingBackAdoptsMostRecentlyEditedDisplay() {
+        let store = SettingsStore(storage: MemorySettingsStorage())
+        store.panels = layout().panels; store.sharedLayoutReferenceSize = canvas
+        store.setSameLayoutOnAllDisplays(false)
+        var a = store.layout(for: "uuid:a", screen: canvas)
+        a.panels[0].placement = FractionalFrame(frame: CGRect(x: 40, y: 40, width: 400, height: 300), screen: canvas)
+        store.saveLayout(a, for: "uuid:a")
+        let small = CGSize(width: 1200, height: 750)
+        var b = store.layout(for: "uuid:b", screen: small)
+        b.panels.reverse()
+        b.panels[0].placement = FractionalFrame(frame: CGRect(x: 100, y: 100, width: 300, height: 200), screen: small)
+        store.saveLayout(b, for: "uuid:b")
+        var layouts = store.layoutsByDisplay
+        XCTAssertNotNil(layouts["uuid:a"]?.editedAt)
+        XCTAssertNotNil(layouts["uuid:b"]?.editedAt)
+        layouts["uuid:a"]?.editedAt = Date(timeIntervalSince1970: 100)
+        layouts["uuid:b"]?.editedAt = Date(timeIntervalSince1970: 200)
+        store.layoutsByDisplay = layouts
+        store.setSameLayoutOnAllDisplays(true)
+        XCTAssertTrue(store.sameLayoutOnAllDisplays)
+        XCTAssertEqual(store.panels.map(\.id), b.panels.map(\.id))
+        XCTAssertEqual(store.panels.map(\.placement), b.panels.map(\.placement))
+        XCTAssertEqual(store.sharedLayoutReferenceSize, small)
+        XCTAssertTrue(store.layoutsByDisplay.isEmpty)
+        store.setSameLayoutOnAllDisplays(false)
+        XCTAssertEqual(store.layout(for: "uuid:a", screen: canvas).panels.map(\.placement), b.panels.map(\.placement))
+    }
+    func testContentOnlySaveKeepsSharedGeometryWhenSwitchingBack() {
+        let store = SettingsStore(storage: MemorySettingsStorage())
+        store.panels = layout().panels; store.sharedLayoutReferenceSize = canvas
+        let before = store.panels.map(\.placement)
+        store.setSameLayoutOnAllDisplays(false)
+        var a = store.layout(for: "uuid:a", screen: CGSize(width: 1200, height: 750))
+        let changed = URL(string: "https://example.invalid/changed")!
+        a.panels[0].url = changed
+        store.saveLayout(a, for: "uuid:a")
+        XCTAssertNil(store.layoutsByDisplay["uuid:a"]?.editedAt)
+        var b = store.layout(for: "uuid:b", screen: canvas)
+        b.panels.append(b.panels.removeFirst())
+        store.saveLayout(b, for: "uuid:b")
+        XCTAssertEqual(store.layout(for: "uuid:b", screen: canvas).panels.map(\.id), b.panels.map(\.id))
+        XCTAssertNil(store.layoutsByDisplay["uuid:b"]?.editedAt, "Bringing a panel forward is not a rearrangement")
+        store.setSameLayoutOnAllDisplays(true)
+        XCTAssertEqual(store.panels.map(\.placement), before)
+        XCTAssertEqual(store.sharedLayoutReferenceSize, canvas)
+        XCTAssertEqual(store.panels[0].url, changed)
+    }
+    func testLegacyPerDisplayContentIsSharedOnce() {
+        let store = SettingsStore(storage: MemorySettingsStorage())
+        let base = layout(count: 2)
+        store.panels = base.panels; store.sameLayoutOnAllDisplays = false
+        let extra = layout(count: 1).panels[0]
+        store.layoutsByDisplay = ["uuid:b": DisplayLayout(panels: [base.panels[1], extra], referenceSize: canvas)]
+        store.shareLegacyDisplayContent()
+        XCTAssertEqual(store.panels.map(\.id), base.panels.map(\.id) + [extra.id])
+        XCTAssertEqual(store.layout(for: "uuid:b", screen: canvas).panels.map(\.id), [base.panels[1].id, extra.id, base.panels[0].id])
+        var shown = store.layout(for: "uuid:a", screen: canvas)
+        shown.panels.removeAll { $0.id == extra.id }
+        store.saveLayout(shown, for: "uuid:a")
+        store.shareLegacyDisplayContent()
+        XCTAssertFalse(store.panels.contains { $0.id == extra.id })
+        XCTAssertEqual(store.layoutsByDisplay["uuid:b"]?.panels.contains { $0.id == extra.id }, false)
+    }
+    func testDisplaysCanTurnOverlayOffIndividually() {
+        let storage = MemorySettingsStorage()
+        let store = SettingsStore(storage: storage)
+        XCTAssertTrue(store.showsOverlay(on: "uuid:a"))
+        store.setShowsOverlay(false, on: "uuid:a")
+        store.setShowsOverlay(false, on: "ephemeral:x")
+        XCTAssertFalse(store.showsOverlay(on: "uuid:a"))
+        XCTAssertTrue(store.showsOverlay(on: "uuid:b"))
+        XCTAssertTrue(store.showsOverlay(on: "ephemeral:x"))
+        XCTAssertFalse(SettingsStore(storage: storage).showsOverlay(on: "uuid:a"))
+        store.setShowsOverlay(true, on: "uuid:a")
+        XCTAssertTrue(store.showsOverlay(on: "uuid:a"))
     }
     func testReferenceSizesPersistAsWidthHeightObjects() throws {
         let storage = MemorySettingsStorage()
@@ -181,13 +286,12 @@ final class DisplayLayoutTests: XCTestCase {
         let sizeJSON = try XCTUnwrap(displayJSON["uuid:b"]?["referenceSize"] as? [String: Double])
         XCTAssertEqual(sizeJSON, ["width": 1920, "height": 1080])
     }
-    func testUnseenDisplayCopiesCurrentOnScreenArrangement() {
+    func testUnseenDisplayIsNotSavedUntilEdited() {
         let store = SettingsStore(storage: MemorySettingsStorage())
         store.panels = layout().panels; store.sameLayoutOnAllDisplays = false
-        let current = layout(count: 1)
-        let copy = store.layout(for: "uuid:new", screen: canvas, current: current)
-        XCTAssertEqual(copy.panels.map(\.id), current.panels.map(\.id))
-        XCTAssertEqual(store.panels.count, 3)
+        let shown = store.layout(for: "uuid:new", screen: canvas)
+        XCTAssertEqual(shown.panels.map(\.id), store.panels.map(\.id))
+        XCTAssertTrue(store.layoutsByDisplay.isEmpty)
     }
     private struct FakeUUIDs: DisplayUUIDProviding {
         var mapping: [CGDirectDisplayID: String]
@@ -197,11 +301,14 @@ final class DisplayLayoutTests: XCTestCase {
         let identity = DisplayIdentity(provider: FakeUUIDs(mapping: [1: "A", 99: "A", 2: "B"]))
         let store = SettingsStore(storage: MemorySettingsStorage())
         store.panels = layout().panels; store.sameLayoutOnAllDisplays = false
-        store.saveLayout(layout(count: 1), for: identity.key(for: 1))
+        var arranged = store.layout(for: identity.key(for: 1), screen: canvas)
+        arranged.panels[0].placement = FractionalFrame(frame: CGRect(x: 40, y: 40, width: 400, height: 300), screen: canvas)
+        store.saveLayout(arranged, for: identity.key(for: 1))
         identity.forgetUnavailable(connected: [])
         XCTAssertEqual(identity.key(for: 1), identity.key(for: 99))
-        XCTAssertEqual(store.layout(for: identity.key(for: 99), screen: canvas).panels.count, 1)
-        XCTAssertEqual(store.layout(for: identity.key(for: 2), screen: canvas).panels.count, 3)
+        XCTAssertEqual(store.layout(for: identity.key(for: 99), screen: canvas).panels[0].placement, arranged.panels[0].placement)
+        XCTAssertEqual(store.layout(for: identity.key(for: 2), screen: canvas).panels[0].placement, store.panels[0].placement)
+        XCTAssertNotEqual(store.panels[0].placement, arranged.panels[0].placement)
     }
     func testMissingUUIDNeverReusesPersistedLayoutOrAnotherDisplayKey() {
         let identity = DisplayIdentity(provider: FakeUUIDs(mapping: [:]))
@@ -214,6 +321,7 @@ final class DisplayLayoutTests: XCTestCase {
         store.sameLayoutOnAllDisplays = false
         store.saveLayout(layout(), for: first)
         XCTAssertTrue(store.layoutsByDisplay.isEmpty)
+        XCTAssertEqual(store.panels.count, 3)
     }
     func testPre008MigrationPreservesFractionsAndReadOnlyChiraSource() throws {
         final class Domain: SettingsMigrationStorage {

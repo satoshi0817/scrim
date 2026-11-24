@@ -4,6 +4,8 @@ import ScrimCore
 
 @MainActor final class WidgetModel: ObservableObject {
     let upcoming: UpcomingEventsModel
+    /// Created only for Notion task panels.
+    private(set) lazy var notion = NotionTasksModel(mapping: spec.notionTasks, filter: spec.notionFilter)
     @Published var isEditing = false
     @Published var clockStyle: ClockStyle {
         didSet { if clockStyle != oldValue { onClockStyleChange?(clockStyle) } }
@@ -34,6 +36,7 @@ import ScrimCore
         guard active != value else { return }
         active = value; timer?.invalidate(); timer = nil
         if spec.kind == .upcoming { upcoming.setActive(value) }
+        if spec.kind == .notionTasks { notion.setActive(value) }
         if value {
             now = Date()
             if spec.kind == .weather { refresh() }
@@ -68,6 +71,7 @@ import ScrimCore
     func refresh(force: Bool = false) {
         now = Date()
         if spec.kind == .upcoming { upcoming.refresh(now: now) }
+        if spec.kind == .notionTasks { notion.refresh(force: force) }
         if spec.kind == .weather && showsHourly { refreshHourly(force: force) }
         guard spec.kind == .weather, task == nil else { return }
         revision += 1; let token = revision
@@ -106,9 +110,14 @@ final class NativeWidgetPanel: NSHostingView<WidgetPanelView> {
         model.isEditing = value
         if !value { model.configuringWorldClock = false; model.upcoming.isConfiguring = false }
     }
+    /// True while the widget shows its own settings face, which takes clicks even in edit mode.
+    var isConfiguring: Bool {
+        model.configuringWorldClock || (model.spec.kind == .upcoming && model.upcoming.isConfiguring)
+            || (model.spec.kind == .notionTasks && model.notion.isConfiguring)
+    }
     func allowsControl(at point: NSPoint) -> Bool {
         guard model.isEditing else { return false }
-        return (model.configuringWorldClock || (model.spec.kind == .upcoming && model.upcoming.isConfiguring)) && bounds.insetBy(dx: 8, dy: 8).contains(point)
+        return isConfiguring && bounds.insetBy(dx: 8, dy: 8).contains(point)
     }
 }
 
@@ -126,10 +135,11 @@ struct WidgetPanelView: View {
                 case .clock: clock(size: geometry.size)
                 case .calendar: calendar(size: geometry.size)
                 case .upcoming: UpcomingEventsView(model: model.upcoming, now: model.now, size: geometry.size, editing: model.isEditing)
+                case .notionTasks: NotionTasksView(model: model.notion, now: model.now, size: geometry.size, editing: model.isEditing)
                 }
             }
             .tint(ScrimPalette.blue)
-            .padding(model.spec.kind == .upcoming ? 0 : model.spec.kind == .weather ? min(24, min(geometry.size.width, geometry.size.height) * 0.075) : compact ? 16 : 24)
+            .padding([.upcoming, .notionTasks].contains(model.spec.kind) ? 0 : model.spec.kind == .weather ? min(24, min(geometry.size.width, geometry.size.height) * 0.075) : compact ? 16 : 24)
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
     }

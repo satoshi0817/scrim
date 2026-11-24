@@ -17,6 +17,7 @@ struct PanelGallery: View {
     private let widgets = [
         Entry(15,"電卓","四則演算・符号変更・パーセント","plus.forwardslash.minus",ScrimPalette.amber),
         Entry(13,"次の予定","予定一覧と開始までの残り時間","calendar.badge.clock",ScrimPalette.red),
+        Entry(16,"Notionタスク","未完了タスクの一覧・追加・完了","checklist",ScrimPalette.blue),
         Entry(10,"東京の天気","気温と3時間ごとの予報","cloud.sun.fill",ScrimPalette.blue),
         Entry(11,"時計","アナログまたはデジタルの時計","clock.fill",ScrimPalette.button),
         Entry(14,"世界時計","都市ごとの時刻と勤務時間","globe",ScrimPalette.button),
@@ -55,6 +56,15 @@ struct PanelGallery: View {
                         .background(entry.color.opacity(0.13), in: RoundedRectangle(cornerRadius: 6))
                 }
             }.frame(maxWidth: 184)
+        case 16:
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach([("checkmark.circle.fill", "資料を共有"), ("circle", "見積もりを確認"), ("circle", "週次レポート")], id: \.1) { symbol, title in
+                    HStack(spacing: 7) {
+                        Image(systemName: symbol).foregroundStyle(symbol == "circle" ? Color.secondary : entry.color)
+                        Text(title).font(.system(size: 12, weight: .medium)).strikethrough(symbol != "circle")
+                    }
+                }
+            }.frame(maxWidth: 184, alignment: .leading)
         case 10:
             HStack(spacing: 18) {
                 VStack(alignment: .leading) {

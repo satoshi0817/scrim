@@ -86,7 +86,22 @@ final class PanelView: NSView, WKNavigationDelegate {
     let browser = BrowserWindows()
     private let websiteDataStore: WKWebsiteDataStore
     private let spinner = NSProgressIndicator()
-    private let menuButton: ActionButton
+    /// Edit mode: a centered menu label, and a blur over the content while hovered. A click anywhere on the
+    /// panel opens the menu and a drag moves it; both are handled by this view's own mouse events.
+    private let editHint = PanelEditHint()
+    private let editBlur = PanelBlurView()
+    /// The back face while the card is flipped to its menu.
+    private var menuFace: NSView?
+    private var menuModel: PanelMenuModel?
+    private var blurCapture = 0
+    private var capturingBlur = false
+    var isShowingMenu: Bool { menuFace != nil }
+    var hasBlurSnapshot: Bool { editBlur.hasSnapshot }
+    var currentMenu: PanelMenuModel? { menuModel }
+    private static weak var openMenuPanel: PanelView?
+    private var hoverArea: NSTrackingArea?
+    private var hovering = false { didSet { if hovering != oldValue { updateEditChrome() } } }
+    private var clickCandidate = false
     var touched: (() -> Void)?
     var changed: (() -> Void)?
     var openedExternalMeeting: (() -> Void)?
@@ -107,15 +122,13 @@ final class PanelView: NSView, WKNavigationDelegate {
         self.weatherProvider = weatherProvider
         self.fileReadAccessRoot = fileReadAccessRoot
         self.websiteDataStore = websiteDataStore
-        id = record.id; url = WebPanelPolicy.launchURL(record.url); fileState = FilePanelState(url: url); menuButton = ActionButton("", action: {})
+        id = record.id; url = WebPanelPolicy.launchURL(record.url); fileState = FilePanelState(url: url)
         super.init(frame: .zero)
         browser.onLastWindowClosed = { [weak self] in self?.didSleep?() }
         wantsLayer = true; layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor; layer?.cornerRadius = 12; layer?.masksToBounds = true
-        menuButton.actionBlock = { [weak self] in self?.showMenu() }; addSubview(menuButton)
-        menuButton.image = NSImage(systemSymbolName: "line.3.horizontal.circle", accessibilityDescription: "パネルのメニュー")
-        menuButton.imagePosition = .imageOnly; menuButton.toolTip = "パネルのメニュー"
-        menuButton.setAccessibilityLabel("パネルのメニュー")
-        image.imageScaling = .scaleAxesIndependently; image.alphaValue = 0.5; addSubview(image, positioned: .below, relativeTo: menuButton)
+        editBlur.isHidden = true; editBlur.alphaValue = 0; addSubview(editBlur)
+        editHint.press = { [weak self] in self?.showMenu() }; editHint.alphaValue = 0; addSubview(editHint)
+        image.imageScaling = .scaleAxesIndependently; image.alphaValue = 0.5; addSubview(image, positioned: .below, relativeTo: editBlur)
         dormantBadge.wantsLayer = true; dormantBadge.layer?.cornerRadius = 16
         dormantBadge.layer?.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 0.95).cgColor
         dormant.alignment = .center; dormant.font = .systemFont(ofSize: 14, weight: .medium)
@@ -147,7 +160,9 @@ final class PanelView: NSView, WKNavigationDelegate {
     }
     override func layout() {
         super.layout()
-        menuButton.frame = NSRect(x: bounds.width-44, y: bounds.height-32, width: 36, height: 28)
+        editBlur.frame = bounds
+        let hint = editHint.fittingSize
+        editHint.frame = NSRect(x: (bounds.width-hint.width)/2, y: (bounds.height-hint.height)/2, width: hint.width, height: hint.height)
         let content = bounds
         if let web {
             let width = webDisplayMode == .mobile && !url.isFileURL ? min(390, content.width) : content.width
@@ -170,7 +185,7 @@ final class PanelView: NSView, WKNavigationDelegate {
     }
     func applyVisibility(_ plan: VisibilityPlan) {
         visibility = plan
-        menuButton.isHidden = !editing || !plan.showsPanelMenuButton
+        updateEditChrome()
         browser.setVisible(plan.alpha > 0 && !plan.ignoresMouseEvents)
         widgetPanel?.setActive(plan.alpha > 0)
         if plan.alpha == 0, WebPanelPolicy.isNotionCalendar(url) {
@@ -209,11 +224,79 @@ final class PanelView: NSView, WKNavigationDelegate {
         layer?.borderWidth = value ? 3 : 0
         layer?.borderColor = ScrimPalette.nativeBlue.cgColor; needsDisplay = true
         window?.invalidateCursorRects(for: self)
+        if let window { hovering = value && bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) }
+        if !value { closeMenu(animated: false) }
         applyVisibility(visibility)
     }
+    /// Edit mode only, and not while a widget shows its own settings face: hovering blurs the panel and shows
+    /// the menu pill on top; the blur stays while the panel is dragged or resized, and behind the menu face.
+    private(set) var editChrome = (pill: false, blur: false)
+    private func updateEditChrome() {
+        let available = editing && visibility.showsPanelMenuButton && !(widgetPanel?.isConfiguring ?? false)
+        let menuOpen = menuFace != nil
+        let dragging = (moving && !clickCandidate) || edges != 0
+        let next = (pill: available && !menuOpen && hovering && !dragging,
+                    blur: available && (menuOpen || hovering || dragging || clickCandidate))
+        editHint.isHidden = !available
+        editBlur.isHidden = !available
+        guard next != editChrome else { return }
+        if next.blur && !editChrome.blur { captureBlur() }
+        editChrome = next
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.15
+            editHint.animator().alphaValue = next.pill ? 1 : 0
+            editBlur.animator().alphaValue = next.blur ? 1 : 0
+        }, completionHandler: { [weak self] in
+            // Free the snapshot as soon as the blur is gone; the next hover takes a fresh one.
+            guard let self, !self.editChrome.blur else { return }
+            self.blurCapture += 1; self.editBlur.setSnapshot(nil)
+        })
+        needsLayout = true
+    }
+    /// Snapshots what the panel shows (web content comes from WebKit, the rest from the view itself) for the blur.
+    private func captureBlur() {
+        blurCapture += 1; let token = blurCapture
+        editBlur.setSnapshot(nil)
+        guard bounds.width >= 1, bounds.height >= 1 else { return }
+        let overlays = [editBlur, editHint] as [NSView]
+        let wasHidden = overlays.map(\.isHidden)
+        // Leave out the overlays and the blue edit border and corner handles, which would bleed into the blur.
+        overlays.forEach { $0.isHidden = true }
+        let border = layer?.borderWidth ?? 0
+        layer?.borderWidth = 0; capturingBlur = true
+        // Quarter resolution: the result is blurred anyway, and full Retina snapshots cost tens of MB per panel.
+        let base = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: max(1, Int(bounds.width * PanelBlurView.captureScale)),
+                                    pixelsHigh: max(1, Int(bounds.height * PanelBlurView.captureScale)), bitsPerSample: 8,
+                                    samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        base?.size = bounds.size
+        if let base { cacheDisplay(in: bounds, to: base) }
+        layer?.borderWidth = border; capturingBlur = false
+        zip(overlays, wasHidden).forEach { $0.isHidden = $1 }
+        guard let base else { return }
+        guard let web, !sleeping, !web.isHidden else { editBlur.setSnapshot(base); return }
+        let webFrame = web.frame
+        let small = WKSnapshotConfiguration(); small.snapshotWidth = NSNumber(value: Double(webFrame.width * PanelBlurView.captureScale))
+        web.takeSnapshot(with: small) { [weak self] picture, _ in
+            guard let self, token == self.blurCapture else { return }
+            if let picture, let context = NSGraphicsContext(bitmapImageRep: base) {
+                NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
+                picture.draw(in: webFrame)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            self.editBlur.setSnapshot(base)
+        }
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area); hoverArea = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovering = editing }
+    override func mouseExited(with event: NSEvent) { hovering = false }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        if editing {
+        if editing && !capturingBlur {
             ScrimPalette.nativeBlue.setFill()
             for x in [CGFloat(0), bounds.width-10] {
                 for y in [CGFloat(0), bounds.height-10] { NSRect(x: x, y: y, width: 10, height: 10).fill() }
@@ -257,6 +340,20 @@ final class PanelView: NSView, WKNavigationDelegate {
                 if SlackLinks.open(url) { self?.openedExternalMeeting?() }
             }
             widget.model.upcoming.onOpenLink = widget.model.upcoming.onOpenMeeting
+            if spec.kind == .notionTasks {
+                widget.model.notion.onOpenPage = { [weak self] url in
+                    if SlackLinks.open(url) { self?.openedExternalMeeting?() }
+                }
+                // Mapping and saved filters both live in the panel URL.
+                let save = { [weak self, weak widget] in
+                    guard let self, let notion = widget?.model.notion, let mapping = notion.mapping else { return }
+                    self.url = WidgetSpec(kind: .notionTasks, notionTasks: mapping, notionFilter: notion.filter).url
+                    self.fileState = FilePanelState(url: self.url)
+                    self.navigated?(self.url)
+                }
+                widget.model.notion.onConfigurationChange = { _ in save() }
+                widget.model.notion.onFilterChange = { _ in save() }
+            }
             widget.model.upcoming.onConfigurationChange = { [weak self, weak widget] in
                 guard let self, let model = widget?.model.upcoming else { return }
                 self.url = WidgetSpec(kind: .upcoming, calendarIDs: model.selectedCalendarIDs, agendaDays: model.displayDays, excludedKeywords: model.excludedKeywords).url
@@ -302,8 +399,31 @@ final class PanelView: NSView, WKNavigationDelegate {
     func reloadContent() {
         if let widgetPanel { widgetPanel.reload(); return }
         browser.closeAll()
-        web?.stopLoading(); web?.navigationDelegate = nil; web?.removeFromSuperview(); web = nil
+        if let web { discard(web) }; web = nil
         document?.removeFromSuperview(); document = nil; wake()
+    }
+    /// Frees the web page while the overlay is hidden. No snapshot: hidden windows do not render one, and the
+    /// next show reloads the page anyway. Logins in progress (open popups) are kept.
+    func releaseWeb() {
+        guard let view = web, !browser.hasOpenWindows else { return }
+        epoch += 1; sleeping = false; web = nil
+        spinner.stopAnimation(nil)
+        discard(view)
+    }
+    /// For a panel that is deleted, replaced or evicted: closes its popups and frees its web page.
+    func discardWeb() {
+        browser.closeAll()
+        guard let view = web else { return }
+        epoch += 1; sleeping = false; web = nil
+        discard(view)
+    }
+    /// Removing a web view is not enough: AppKit can keep one that once had keyboard focus alive (text-selection
+    /// gesture tracking), and with it the page and its content process memory. BlankPageUnloader moves the view
+    /// to a blank page in a fresh process, so WebKit releases the old one.
+    private func discard(_ view: WKWebView) {
+        view.uiDelegate = nil; view.stopLoading()
+        if view.window?.firstResponder === view { view.window?.makeFirstResponder(nil) }
+        BlankPageUnloader.unload(view)
     }
     func sleep() {
         // Do not evict the opener while a login flow still uses window.opener.
@@ -325,7 +445,7 @@ final class PanelView: NSView, WKNavigationDelegate {
         view.takeSnapshot(with: nil) { [weak self, weak view] picture, _ in
             guard let self, self.epoch == token, self.sleeping else { return }
             self.snapshot = picture; self.image.image = picture; self.setDormantAppearance(true)
-            view?.stopLoading(); view?.navigationDelegate = nil; view?.removeFromSuperview(); self.web = nil
+            if let view { self.discard(view) }; self.web = nil
             self.spinner.stopAnimation(nil)
             self.didSleep?()
         }
@@ -361,70 +481,101 @@ final class PanelView: NSView, WKNavigationDelegate {
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         if url.isFileURL { showFileError() }
     }
-    private func showMenu() {
-        guard editing else { return }
-        let menu = NSMenu()
-        if let spec = WidgetSpec(url: url), spec.kind == .clock {
-            for (tag, title, style) in [(20, "アナログ時計", ClockStyle.analog), (21, "デジタル時計", ClockStyle.digital)] {
-                let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
-                item.tag = tag; item.target = self
-                item.state = widgetPanel?.model.clockStyle == style ? .on : .off
-                menu.addItem(item)
-            }
-            if let model = widgetPanel?.model, model.clockStyle == .digital {
-                let item = NSMenuItem(title: "表示するタイムゾーン", action: nil, keyEquivalent: "")
-                let zonesMenu = NSMenu()
-                let common = Set(WorkCity.names.keys).union(model.digitalZones)
-                let more = NSMenu()
-                for id in common.sorted() + TimeZone.knownTimeZoneIdentifiers.filter({ !common.contains($0) }).sorted() {
-                    let selected = model.digitalZones.contains(id)
-                    let item = NSMenuItem(title: WorkCity.names[id] ?? id, action: #selector(toggleDigitalZone(_:)), keyEquivalent: "")
-                    item.target = self
-                    item.representedObject = id
-                    item.state = selected ? .on : .off
-                    if selected && model.digitalZones.count == 1 { item.action = nil }
-                    (common.contains(id) ? zonesMenu : more).addItem(item)
-                }
-                let other = NSMenuItem(title: "その他のタイムゾーン", action: nil, keyEquivalent: "")
-                other.submenu = more
-                zonesMenu.addItem(other)
-                item.submenu = zonesMenu
-                menu.addItem(item)
-            }
-            menu.addItem(.separator())
+    /// Opens the menu face over the blurred panel: the pill fades away and the face fades in with a slight
+    /// zoom. Nothing turns. `point` is unused; a click anywhere opens it.
+    private func showMenu(at point: NSPoint? = nil) {
+        guard editing, menuFace == nil, !(widgetPanel?.isConfiguring ?? false) else { return }
+        if let open = Self.openMenuPanel, open !== self { open.closeMenu(animated: true) }
+        let model = makeMenuModel()
+        let face = NSHostingView(rootView: PanelMenuFace(model: model).tint(ScrimPalette.blue))
+        face.frame = bounds; face.autoresizingMask = [.width, .height]
+        addSubview(face)
+        menuFace = face; menuModel = model; Self.openMenuPanel = self
+        updateEditChrome()
+        animateFace(face, appearing: true)
+    }
+    /// Back to the content. Without animation when edit mode ends or a widget's settings face takes over.
+    func closeMenu(animated: Bool) {
+        guard let face = menuFace else { return }
+        menuFace = nil; menuModel = nil
+        if Self.openMenuPanel === self { Self.openMenuPanel = nil }
+        updateEditChrome()
+        guard animated else { face.removeFromSuperview(); return }
+        animateFace(face, appearing: false) { face.removeFromSuperview() }
+    }
+    static let faceFadeIn: TimeInterval = 0.2
+    static let faceFadeOut: TimeInterval = 0.16
+    /// Fade plus a 3% zoom around the face's center (fade only with Reduce Motion).
+    private func animateFace(_ face: NSView, appearing: Bool, completion: (() -> Void)? = nil) {
+        face.wantsLayer = true
+        face.alphaValue = appearing ? 0 : 1
+        let duration = appearing ? Self.faceFadeIn : Self.faceFadeOut
+        let timing = CAMediaTimingFunction(name: appearing ? .easeOut : .easeIn)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = duration; context.timingFunction = timing
+            face.animator().alphaValue = appearing ? 1 : 0
+        }, completionHandler: completion)
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let layer = face.layer else { return }
+        let pivot = (x: face.bounds.width * (0.5 - layer.anchorPoint.x), y: face.bounds.height * (0.5 - layer.anchorPoint.y))
+        func scaled(_ factor: CGFloat) -> CATransform3D {
+            CATransform3DConcat(CATransform3DConcat(CATransform3DMakeTranslation(-pivot.x, -pivot.y, 0), CATransform3DMakeScale(factor, factor, 1)),
+                                CATransform3DMakeTranslation(pivot.x, pivot.y, 0))
         }
-        if WidgetSpec(url: url)?.kind == .worldclock {
-            let item = NSMenuItem(title: "都市と勤務時間を設定…", action: #selector(menuAction(_:)), keyEquivalent: "")
-            item.tag = 24; item.target = self; menu.addItem(item); menu.addItem(.separator())
+        let zoom = CABasicAnimation(keyPath: "transform")
+        zoom.fromValue = scaled(appearing ? 0.97 : 1); zoom.toValue = scaled(appearing ? 1 : 0.98)
+        zoom.duration = duration; zoom.timingFunction = timing
+        if !appearing { zoom.fillMode = .forwards; zoom.isRemovedOnCompletion = false }
+        layer.add(zoom, forKey: "menuZoom")
+    }
+    /// The menu face's items: panel-specific settings first, then the shared actions, then removal.
+    private func makeMenuModel() -> PanelMenuModel {
+        let spec = WidgetSpec(url: url)
+        var setup: [PanelMenuItem] = []
+        switch spec?.kind {
+        case .worldclock: setup.append(PanelMenuItem(tag: 24, title: "都市と勤務時間を設定…", symbol: "globe"))
+        case .upcoming: setup.append(PanelMenuItem(tag: 22, title: "表示するカレンダーを設定…", symbol: "calendar"))
+        case .notionTasks: setup.append(PanelMenuItem(tag: 26, title: "データベースと列を設定…", symbol: "tablecells"))
+        default: break
         }
-        if WidgetSpec(url: url)?.kind == .upcoming {
-            let item = NSMenuItem(title: "表示するカレンダーを設定…", action: #selector(menuAction(_:)), keyEquivalent: "")
-            item.tag = 22; item.target = self; menu.addItem(item); menu.addItem(.separator())
+        if WebPanelPolicy.isNotionCalendar(url) { setup.append(PanelMenuItem(tag: 23, title: "今日に戻す", symbol: "calendar.badge.clock")) }
+        if ["https", "http"].contains(url.scheme?.lowercased()) { setup.append(PanelMenuItem(tag: 25, title: "Webパネル設定…", symbol: "safari")) }
+        var actions = [PanelMenuItem(tag: 0, title: "更新", symbol: "arrow.clockwise")]
+        if canEditContent { actions.append(PanelMenuItem(tag: 4, title: "内容を編集…", symbol: "square.and.pencil")) }
+        if spec == nil { actions.append(PanelMenuItem(tag: 1, title: "既定のアプリで開く", symbol: "arrow.up.forward.app")) }
+        actions.append(PanelMenuItem(tag: 2, title: "複製", symbol: "plus.square.on.square"))
+        let title = spec?.title ?? (url.isFileURL ? url.lastPathComponent : url.host ?? url.absoluteString)
+        let model = PanelMenuModel(title: title, setupItems: setup, actions: actions,
+                                   remove: PanelMenuItem(tag: 3, title: "パネルを削除", symbol: "trash", destructive: true),
+                                   clockStyle: spec?.kind == .clock ? widgetPanel?.model.clockStyle : nil,
+                                   digitalZones: widgetPanel?.model.digitalZones ?? [])
+        model.choose = { [weak self] tag in self?.chooseMenuItem(tag) }
+        model.toggleZone = { [weak self, weak model] zone in
+            self?.toggleDigitalZone(zone); model?.digitalZones = self?.widgetPanel?.model.digitalZones ?? []
         }
-        if WebPanelPolicy.isNotionCalendar(url) {
-            let item = NSMenuItem(title: "今日に戻す", action: #selector(menuAction(_:)), keyEquivalent: "")
-            item.tag = 23; item.target = self; menu.addItem(item); menu.addItem(.separator())
+        model.close = { [weak self] in self?.closeMenu(animated: true) }
+        return model
+    }
+    /// Runs a menu-face item. Clock style stays on the face; settings faces replace it; dialogs and
+    /// actions flip back first; removal needs no flip because the panel goes away.
+    func chooseMenuItem(_ tag: Int) {
+        guard editing, menuFace != nil else { return }
+        switch tag {
+        case 20, 21:
+            performMenuAction(tag)
+            menuModel?.clockStyle = widgetPanel?.model.clockStyle
+        case 22, 24, 26:
+            closeMenu(animated: false)
+            var transaction = Transaction(); transaction.disablesAnimations = true
+            withTransaction(transaction) { performMenuAction(tag) }
+        case 3: closeMenu(animated: false); performMenuAction(tag)
+        default:
+            closeMenu(animated: true)
+            performMenuAction(tag)
         }
-        if ["https", "http"].contains(url.scheme?.lowercased()) {
-            let item = NSMenuItem(title: "Webパネル設定…", action: #selector(menuAction(_:)), keyEquivalent: "")
-            item.tag = 25
-            item.target = self
-            menu.addItem(item)
-            menu.addItem(.separator())
-        }
-        for (index, text) in ["更新", "既定のアプリで開く", "複製", "パネルを削除"].enumerated() {
-            if index == 1 && WidgetSpec(url: url) != nil { continue }
-            let item = NSMenuItem(title: text, action: #selector(menuAction(_:)), keyEquivalent: ""); item.tag = index; item.target = self; menu.addItem(item)
-        }
-        if canEditContent {
-            let edit = NSMenuItem(title: "内容を編集…", action: #selector(menuAction(_:)), keyEquivalent: "")
-            edit.tag = 4; edit.target = self; menu.insertItem(edit, at: 1)
-        }
-        menu.popUp(positioning: nil, at: NSPoint(x: bounds.width-40, y: bounds.height-32), in: self)
     }
     private var digitalZonesKey: String { "digitalClock.zones." + id.uuidString }
-    @objc private func toggleDigitalZone(_ item: NSMenuItem) {
-        guard editing, let zone = item.representedObject as? String, let model = widgetPanel?.model else { return }
+    private func toggleDigitalZone(_ zone: String) {
+        guard editing, let model = widgetPanel?.model else { return }
         if model.digitalZones.contains(zone) {
             guard model.digitalZones.count > 1 else { return }
             model.digitalZones.removeAll { $0 == zone }
@@ -434,14 +585,14 @@ final class PanelView: NSView, WKNavigationDelegate {
         UserDefaults.standard.set(model.digitalZones, forKey: digitalZonesKey)
     }
 
-    @objc private func menuAction(_ item: NSMenuItem) { performMenuAction(item.tag) }
     func performMenuAction(_ tag: Int) {
         guard editing else { return }
         switch tag {
         case 20: widgetPanel?.model.clockStyle = .analog
         case 21: widgetPanel?.model.clockStyle = .digital
-        case 22: widgetPanel?.model.upcoming.isConfiguring = true
-        case 24: widgetPanel?.model.configuringWorldClock = true
+        case 22: widgetPanel?.model.upcoming.isConfiguring = true; updateEditChrome()
+        case 24: widgetPanel?.model.configuringWorldClock = true; updateEditChrome()
+        case 26: widgetPanel?.model.notion.beginConfiguring(); updateEditChrome()
         case 23: returnCalendarToToday()
         default: command?(tag)
         }
@@ -450,8 +601,10 @@ final class PanelView: NSView, WKNavigationDelegate {
         guard let hit = super.hitTest(point) else { return nil }
         let p = convert(point, from: superview)
         if editing {
-            if !menuButton.isHidden && menuButton.frame.contains(p) { return menuButton }
-            if let widgetPanel, widgetPanel.allowsControl(at: widgetPanel.convert(p, from: self)) { return hit }
+            // The menu face and a widget's own settings face stay interactive (edges still resize);
+            // everywhere else the panel takes the click or drag.
+            if let menuFace, menuFace.frame.insetBy(dx: 8, dy: 8).contains(p) { return menuFace.hitTest(p) ?? menuFace }
+            if let widgetPanel, widgetPanel.allowsControl(at: widgetPanel.convert(p, from: self)) { return widgetPanel.hitTest(p) ?? hit }
             return self
         }
         return hit
@@ -462,6 +615,11 @@ final class PanelView: NSView, WKNavigationDelegate {
         let p = convert(event.locationInWindow, from: nil)
         edges = (p.x < 7 ? 1 : 0) | (p.x > bounds.width-7 ? 2 : 0) | (p.y < 7 ? 4 : 0) | (p.y > bounds.height-7 ? 8 : 0)
         moving = edges == 0
+        clickCandidate = moving
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        guard editing else { super.rightMouseDown(with: event); return }
+        touched?(); showMenu(at: convert(event.locationInWindow, from: nil))
     }
     override func resetCursorRects() {
         guard editing else { return }
@@ -477,6 +635,11 @@ final class PanelView: NSView, WKNavigationDelegate {
     override func mouseDragged(with event: NSEvent) {
         guard editing else { return }
         let dx = event.locationInWindow.x-origin.x, dy = event.locationInWindow.y-origin.y
+        // A press that stays within a few points is a click (menu), not a move.
+        if clickCandidate {
+            guard hypot(dx, dy) >= Self.dragThreshold else { return }
+            clickCandidate = false; updateEditChrome()
+        }
         var r = original
         if moving { r.origin.x += dx; r.origin.y += dy }
         else {
@@ -492,11 +655,16 @@ final class PanelView: NSView, WKNavigationDelegate {
             needsLayout = true
         }
     }
+    static let dragThreshold: CGFloat = 4
     override func mouseUp(with event: NSEvent) {
+        let click = editing && clickCandidate
         if editing, let dropFrame { settleFrame(dropFrame); changed?() }
         dropFrame = nil
         moving = false
         edges = 0
+        clickCandidate = false
+        updateEditChrome()
+        if click { showMenu(at: convert(event.locationInWindow, from: nil)) }
     }
     deinit { browser.closeAll() }
 }
@@ -648,7 +816,10 @@ final class OverlayController {
             let ids = Set(NSScreen.screens.compactMap { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value })
             self?.displayIdentity.forgetUnavailable(connected: ids)
         }
-        memoryPressure.setEventHandler { [weak self] in self?.parkedCanvases.removeAll() }
+        memoryPressure.setEventHandler { [weak self] in
+            self?.evictAllParked()
+            if self?.state == .hidden { self?.releaseWebPanels(force: true) }
+        }
         memoryPressure.resume()
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel, .keyDown]) { [weak self] event in
             guard let self, event.window === self.panel else { return event }
@@ -705,8 +876,31 @@ final class OverlayController {
             return event
         }
     }
-    func show(_ next: OverlayState, immediately: Bool = false) {
-        let wasHidden = state == .hidden; state = next
+    private func displayKey(for screen: NSScreen) -> String {
+        // No screen index/name fallback: missing UUID/number never borrows another display's layout.
+        let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        return number.map { displayIdentity.key(for: $0) } ?? "ephemeral:" + UUID().uuidString
+    }
+    /// The pointer's display, unless the overlay is turned off there. Explicit menu actions
+    /// fall back to another enabled display so Settings always stays reachable.
+    private func presentationScreen(explicit: Bool) -> (screen: NSScreen, key: String)? {
+        guard let pointer = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main else { return nil }
+        let pointerKey = displayKey(for: pointer)
+        if store.showsOverlay(on: pointerKey) { return (pointer, pointerKey) }
+        guard explicit else { return nil }
+        let candidates = ([NSScreen.main].compactMap { $0 } + NSScreen.screens).map { ($0, displayKey(for: $0)) }
+        return candidates.first { store.showsOverlay(on: $0.1) } ?? (pointer, pointerKey)
+    }
+    /// Returns false, leaving the overlay hidden, when the pointer's display has the overlay turned off.
+    @discardableResult func show(_ next: OverlayState, immediately: Bool = false, explicit: Bool = false) -> Bool {
+        let wasHidden = state == .hidden
+        var target: (screen: NSScreen, key: String)?
+        if wasHidden && next != .hidden {
+            target = presentationScreen(explicit: explicit)
+            if target == nil { return false }
+        }
+        state = next
+        if next == .hidden { scheduleIdleRelease() } else { idleRelease?.invalidate(); idleRelease = nil }
         monitorOutsideInteraction(next != .hidden)
         if next != .pinned { closeDialog(); setEditing(false) }
         visibilityRevision += 1
@@ -722,7 +916,7 @@ final class OverlayController {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0; self.panel.animator().alphaValue = 0
                 }
-                return
+                return true
             }
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = plan.fadeDuration
@@ -733,18 +927,16 @@ final class OverlayController {
                       self.panel.isKeyWindow, !(self.isSettingsKey?() ?? false) else { return }
                 NSApp.deactivate()
             })
-            return
+            return true
         }
-        if wasHidden, let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main {
+        if wasHidden, let (screen, key) = target {
             // AppKit screen coordinates start at the bottom. Reserve the full notch strip.
             var canvas = screen.frame
             canvas.size.height -= screen.safeAreaInsets.top
-            let current = activeDisplay == nil || presentedPage != store.currentPage ? nil : displayedLayout()
-            let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
-            // No screen index/name fallback: missing UUID/number never borrows another display's layout.
-            let key = number.map { displayIdentity.key(for: $0) } ?? "ephemeral:" + UUID().uuidString
-            let layout = (!store.sameLayoutOnAllDisplays ? ephemeralLayouts[ephemeralKey(key)] : nil)
-                ?? store.layout(for: key, screen: canvas.size, current: current)
+            // In-memory arrangements belong to the mode they were made in.
+            if activeShared != store.sameLayoutOnAllDisplays { ephemeralLayouts.removeAll() }
+            let transient = store.sameLayoutOnAllDisplays ? nil : ephemeralLayouts[ephemeralKey(key)]
+            let layout = store.layout(for: key, screen: canvas.size, transient: transient)
             activeDisplay = key; activeShared = store.sameLayoutOnAllDisplays
             panel.setFrame(canvas, display: false); root.frame.size = canvas.size
             loadPageLayout(layout)
@@ -761,6 +953,7 @@ final class OverlayController {
             }
         }
         if plan.makeKey { panel.makeKey() }
+        return true
     }
     private func loadPageLayout(_ layout: DisplayLayout) {
         let selected = Array(layout.panels.prefix(PanelPool.maximum))
@@ -790,6 +983,26 @@ final class OverlayController {
         let addresses: [UUID: URL]
     }
     private var parkedCanvases: [ParkedCanvas] = []
+    /// Parked pages hold live web views outside the window; dropping one must free their pages too.
+    private func evict(_ canvas: ParkedCanvas) { canvas.views.values.forEach { $0.discardWeb() } }
+    private func evictAllParked() { parkedCanvases.forEach(evict); parkedCanvases.removeAll() }
+    /// Web pages are the largest memory cost (one WebKit content process each, often 100–400 MB).
+    /// After the overlay stays hidden this long, they are swapped for snapshots; the next show reloads them.
+    static let idleReleaseDelay: TimeInterval = 10 * 60
+    private var idleRelease: Timer?
+    private func scheduleIdleRelease() {
+        idleRelease?.invalidate(); idleRelease = nil
+        guard store.releasesIdleWebPanels else { return }
+        idleRelease = Timer.scheduledTimer(withTimeInterval: Self.idleReleaseDelay, repeats: false) { [weak self] _ in
+            self?.releaseWebPanels(force: false)
+        }
+    }
+    /// Snapshots and releases every web page while hidden (parked pages too). Logins in progress are kept.
+    func releaseWebPanels(force: Bool) {
+        guard state == .hidden, force || store.releasesIdleWebPanels else { return }
+        evictAllParked()
+        for view in views.values where view.web != nil { view.releaseWeb() }
+    }
     private let memoryPressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
 
     private func exchangeWebSessions(for index: Int, layout: DisplayLayout, outgoingIndex: Int) {
@@ -802,7 +1015,8 @@ final class OverlayController {
             }
             let addresses = live.mapValues { $0.url }
             parkedCanvases.append(ParkedCanvas(index: outgoingIndex, pool: pool, views: live, addresses: addresses))
-            if parkedCanvases.count > 2 { parkedCanvases.removeFirst() }
+            // One parked page keeps back-and-forth switching instant without holding several pages of web processes.
+            if parkedCanvases.count > 1 { evict(parkedCanvases.removeFirst()) }
         }
         for view in views.values where view.superview != nil { view.removeFromSuperview() }
         views.removeAll()
@@ -832,8 +1046,8 @@ final class OverlayController {
         placementPreview = nil
         let outgoingIndex = store.currentPage
         store.currentPage = index
-        var layout = (!store.sameLayoutOnAllDisplays ? ephemeralLayouts[ephemeralKey(key)] : nil)
-            ?? store.layout(for: key, screen: root.bounds.size)
+        let transient = store.sameLayoutOnAllDisplays ? nil : ephemeralLayouts[ephemeralKey(key)]
+        var layout = store.layout(for: key, screen: root.bounds.size, transient: transient)
         exchangeWebSessions(for: index, layout: layout, outgoingIndex: outgoingIndex)
         // A background login redirect may have completed while this canvas was parked.
         for i in layout.panels.indices {
@@ -891,6 +1105,7 @@ final class OverlayController {
         guard store.currentPage == neighbor else { return }
         store.removePage(index)
         presentedPage = store.currentPage
+        parkedCanvases.filter { $0.index == index }.forEach(evict)
         parkedCanvases.removeAll { $0.index == index }
         for i in parkedCanvases.indices where parkedCanvases[i].index > index { parkedCanvases[i].index -= 1 }
         var remaining: [String: DisplayLayout] = [:]
@@ -1079,7 +1294,7 @@ final class OverlayController {
             case 4:
                 guard self.documentStorage.owns(view.url) else { return }
                 self.documentPrompt(kind: view.url.pathExtension == "html" ? .html : .text, existing: view)
-            default: view.removeFromSuperview(); self.views.removeValue(forKey: record.id); PanelActions.close(record.id, records: &self.records, pool: &self.pool); self.persist(); self.layoutChrome()
+            default: view.discardWeb(); view.removeFromSuperview(); self.views.removeValue(forKey: record.id); PanelActions.close(record.id, records: &self.records, pool: &self.pool); self.persist(); self.layoutChrome()
             }
         }
     }
@@ -1090,6 +1305,7 @@ final class OverlayController {
         if records[index].url != url {
             let frame = view.frame
             view.navigated = nil
+            view.discardWeb()
             view.removeFromSuperview()
             records[index].url = url
             install(records[index])
@@ -1194,6 +1410,7 @@ final class OverlayController {
         case 15: add(WidgetSpec(kind: .calculator).url, at: target)
         case 14: add(WidgetSpec(kind: .worldclock).url, at: target)
         case 13: add(WidgetSpec(kind: .upcoming).url, at: target)
+        case 16: add(WidgetSpec(kind: .notionTasks).url, at: target)
         case 3:
             let picker = NSOpenPanel(); picker.canChooseDirectories = false; picker.allowsMultipleSelection = true
             picker.allowedContentTypes = [.pdf, .html, .plainText, UTType(filenameExtension: "md") ?? .plainText,
@@ -1315,8 +1532,9 @@ final class OverlayController {
         records = layout.panels
         // Web navigation callbacks can arrive after the settings toggle but before show.
         guard activeShared == store.sameLayoutOnAllDisplays else { return }
+        // Displays without a UUID keep their arrangement in memory; content is still shared.
         if !activeShared && display.hasPrefix("ephemeral:") { ephemeralLayouts[ephemeralKey(display)] = layout }
-        else { store.savePresentedLayout(layout, for: display, wasFitted: presentationWasFitted) }
+        store.savePresentedLayout(layout, for: display, wasFitted: presentationWasFitted)
     }
     deinit {
         memoryPressure.cancel()
@@ -1324,5 +1542,34 @@ final class OverlayController {
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         panel.orderOut(nil)
+    }
+}
+
+/// Moves a discarded web view to a blank page under an unrelated origin (never fetched). That load runs in a fresh
+/// content process, and WebKit suspends the old process, which returns the page's memory even if AppKit keeps the
+/// view object alive. The view leaves its superview once the blank page loads (or after a few seconds).
+private final class BlankPageUnloader: NSObject, WKNavigationDelegate {
+    static let blankOrigin = URL(string: "https://released.scrim.invalid/")!
+    private var view: WKWebView?
+    private var keepAlive: BlankPageUnloader?
+    static func unload(_ view: WKWebView) {
+        let unloader = BlankPageUnloader(view)
+        view.navigationDelegate = unloader
+        view.loadHTMLString("<!doctype html><title></title>", baseURL: blankOrigin)
+    }
+    private init(_ view: WKWebView) {
+        self.view = view
+        super.init()
+        keepAlive = self
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.finish() }
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finish() }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { finish() }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { finish() }
+    private func finish() {
+        guard let view else { return }
+        self.view = nil
+        view.navigationDelegate = nil; view.removeFromSuperview()
+        keepAlive = nil
     }
 }
