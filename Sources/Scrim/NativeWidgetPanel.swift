@@ -3,7 +3,7 @@ import SwiftUI
 import ScrimCore
 
 @MainActor final class WidgetModel: ObservableObject {
-    let upcoming: UpcomingEventsModel
+    let upcoming: UpcomingEventsModel?
     @Published var isEditing = false
     @Published var clockStyle: ClockStyle {
         didSet { if clockStyle != oldValue { onClockStyleChange?(clockStyle) } }
@@ -28,19 +28,22 @@ import ScrimCore
     @Published private(set) var active = false
     init(spec: WidgetSpec, provider: any WeatherProviding = WeatherService.shared) {
         self.spec = spec; self.provider = provider; clockStyle = spec.clockStyle
-        upcoming = UpcomingEventsModel(selectedCalendarIDs: spec.calendarIDs, displayDays: spec.agendaDays, excludedKeywords: spec.excludedKeywords)
+        upcoming = spec.kind == .upcoming
+            ? UpcomingEventsModel(selectedCalendarIDs: spec.calendarIDs, displayDays: spec.agendaDays, excludedKeywords: spec.excludedKeywords)
+            : nil
     }
     func setActive(_ value: Bool) {
         guard active != value else { return }
         active = value; timer?.invalidate(); timer = nil
-        if spec.kind == .upcoming { upcoming.setActive(value) }
+        upcoming?.setActive(value)
         if value {
             now = Date()
+            guard spec.kind != .calculator else { return }
             if spec.kind == .weather { refresh() }
             timer = Timer.scheduledTimer(withTimeInterval: spec.kind == .clock ? 1 : 60, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.active else { return }; self.now = Date()
-                    if self.spec.kind == .upcoming { self.upcoming.refresh(now: self.now) }
+                    self.upcoming?.refresh(now: self.now)
                     if self.spec.kind == .weather, self.weather.map({ Date().timeIntervalSince($0.fetchedAt) >= 600 }) ?? true { self.refresh() }
                 }
             }
@@ -67,7 +70,7 @@ import ScrimCore
     }
     func refresh(force: Bool = false) {
         now = Date()
-        if spec.kind == .upcoming { upcoming.refresh(now: now) }
+        upcoming?.refresh(now: now)
         if spec.kind == .weather && showsHourly { refreshHourly(force: force) }
         guard spec.kind == .weather, task == nil else { return }
         revision += 1; let token = revision
@@ -93,9 +96,11 @@ import ScrimCore
 
 final class NativeWidgetPanel: NSHostingView<WidgetPanelView> {
     let model: WidgetModel
-    init(spec: WidgetSpec, provider: any WeatherProviding = WeatherService.shared) {
+    init(spec: WidgetSpec, provider: any WeatherProviding = WeatherService.shared, openWebLink: @escaping (URL) -> Void) {
         model = WidgetModel(spec: spec, provider: provider)
-        super.init(rootView: WidgetPanelView(model: model))
+        model.upcoming?.onOpenLink = openWebLink
+        model.upcoming?.onOpenMeeting = openWebLink
+        super.init(rootView: WidgetPanelView(model: model, openWebLink: openWebLink))
         setAccessibilityLabel(spec.title)
     }
     required init(rootView: WidgetPanelView) { fatalError() }
@@ -104,28 +109,37 @@ final class NativeWidgetPanel: NSHostingView<WidgetPanelView> {
     func reload() { model.refresh(force: true) }
     func setEditing(_ value: Bool) {
         model.isEditing = value
-        if !value { model.configuringWorldClock = false; model.upcoming.isConfiguring = false }
+        if !value { model.configuringWorldClock = false; model.upcoming?.isConfiguring = false }
     }
     func allowsControl(at point: NSPoint) -> Bool {
         guard model.isEditing else { return false }
-        return (model.configuringWorldClock || (model.spec.kind == .upcoming && model.upcoming.isConfiguring)) && bounds.insetBy(dx: 8, dy: 8).contains(point)
+        return (model.configuringWorldClock || model.upcoming?.isConfiguring == true) && bounds.insetBy(dx: 8, dy: 8).contains(point)
     }
 }
 
 struct WidgetPanelView: View {
     @ObservedObject var model: WidgetModel
+    var openWebLink: (URL) -> Void = { DefaultBrowser.open($0) }
     @State private var clockPage = 0
     var body: some View {
         GeometryReader { geometry in
             let compact = geometry.size.height < 260 || geometry.size.width < 300
             Group {
                 switch model.spec.kind {
-                case .weather: weather(compact: compact, size: geometry.size)
+                case .weather:
+                    weather(compact: compact, size: geometry.size)
+                        .environment(\.openURL, OpenURLAction { url in
+                            openWebLink(url)
+                            return .handled
+                        })
                 case .calculator: CalculatorWidget()
                 case .worldclock: WorldClockView(now: model.now, configuring: $model.configuringWorldClock)
                 case .clock: clock(size: geometry.size)
                 case .calendar: calendar(size: geometry.size)
-                case .upcoming: UpcomingEventsView(model: model.upcoming, now: model.now, size: geometry.size, editing: model.isEditing)
+                case .upcoming:
+                    if let upcoming = model.upcoming {
+                        UpcomingEventsView(model: upcoming, now: model.now, size: geometry.size, editing: model.isEditing)
+                    }
                 }
             }
             .tint(ScrimPalette.blue)
@@ -134,8 +148,7 @@ struct WidgetPanelView: View {
         }
     }
     private func time(_ date: Date, format: String, zone: TimeZone = .current) -> String {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "ja_JP"); formatter.timeZone = zone; formatter.dateFormat = format
-        return formatter.string(from: date)
+        WidgetDateFormatters.shared.string(from: date, format: format, zone: zone)
     }
     private func clock(size: CGSize) -> some View {
         VStack(spacing: 12) {

@@ -1,6 +1,32 @@
 import AppKit
 import SwiftUI
 
+final class WidgetDateFormatters: NSObject {
+    static let shared = WidgetDateFormatters()
+    private let cache = NSCache<NSString, DateFormatter>()
+
+    private override init() {
+        super.init()
+        cache.countLimit = 64
+        for name in [NSLocale.currentLocaleDidChangeNotification, NSNotification.Name.NSSystemTimeZoneDidChange] {
+            NotificationCenter.default.addObserver(self, selector: #selector(clear(_:)), name: name, object: nil)
+        }
+    }
+
+    @objc private func clear(_ notification: Notification) { cache.removeAllObjects() }
+
+    func string(from date: Date, format: String, zone: TimeZone) -> String {
+        let key = "\(zone.identifier)|\(format)" as NSString
+        if let formatter = cache.object(forKey: key) { return formatter.string(from: date) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.timeZone = zone
+        formatter.dateFormat = format
+        cache.setObject(formatter, forKey: key)
+        return formatter.string(from: date)
+    }
+}
+
 struct WorkCity: Identifiable, Codable {
     var id: String
     var start = 9
@@ -8,24 +34,23 @@ struct WorkCity: Identifiable, Codable {
     static let names = ["Asia/Tokyo":"東京", "Europe/London":"ロンドン", "America/Los_Angeles":"サンフランシスコ", "America/New_York":"ニューヨーク", "Europe/Paris":"パリ", "Europe/Berlin":"ベルリン", "Asia/Seoul":"ソウル", "Asia/Singapore":"シンガポール", "Asia/Kolkata":"ベンガルール", "Australia/Sydney":"シドニー"]
     static let initial = ["Asia/Tokyo", "Europe/London", "America/Los_Angeles"].map { WorkCity(id: $0) }
     var name: String { Self.names[id] ?? id.components(separatedBy: "/").last!.replacingOccurrences(of: "_", with: " ") }
+    private var timeZone: TimeZone { TimeZone(identifier: id) ?? .gmt }
     var calendar: Calendar {
         var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: id) ?? .gmt
+        cal.timeZone = timeZone
         return cal
     }
-    func working(_ date: Date) -> Bool {
+    func workingSlots(_ dates: [Date]) -> [Bool] {
         let cal = calendar
-        let hour = cal.component(.hour, from: date)
-        let weekday = cal.component(.weekday, from: date)
-        if start > end && hour < end { return (3...7).contains(weekday) }
-        return (2...6).contains(weekday) && hour >= start && (start > end || hour < end)
+        return dates.map { date in
+            let parts = cal.dateComponents([.hour, .weekday], from: date)
+            guard let hour = parts.hour, let weekday = parts.weekday else { return false }
+            if start > end && hour < end { return (3...7).contains(weekday) }
+            return (2...6).contains(weekday) && hour >= start && (start > end || hour < end)
+        }
     }
     func label(_ date: Date, format: String) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ja_JP")
-        f.timeZone = calendar.timeZone
-        f.dateFormat = format
-        return f.string(from: date)
+        WidgetDateFormatters.shared.string(from: date, format: format, zone: timeZone)
     }
 }
 
@@ -43,9 +68,6 @@ struct WorldClockView: View {
     }
     private var instant: Date { selection ?? now }
     private var day: DateInterval { Calendar.current.dateInterval(of: .day, for: instant)! }
-    private var slots: [Date] {
-        (0..<Int(day.duration / 900)).map { day.start.addingTimeInterval(Double($0) * 900) }
-    }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -60,12 +82,14 @@ struct WorldClockView: View {
         }.buttonStyle(.borderless)
     }
     private var clocks: some View {
-        let rows = cities
-        let ticks = slots
-        let common = ticks.map { date in rows.allSatisfy { $0.working(date) } }
+        let day = self.day
+        let ticks = (0..<Int(day.duration / 900)).map { day.start.addingTimeInterval(Double($0) * 900) }
+        let rows = cities.map { (city: $0, active: $0.workingSlots(ticks)) }
+        let common = ticks.indices.map { index in rows.allSatisfy { $0.active[index] } }
         return ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                ForEach(rows) { city in
+                ForEach(rows, id: \.city.id) { row in
+                    let city = row.city
                     VStack(spacing: 3) {
                         HStack {
                             Image(systemName: (6..<18).contains(city.calendar.component(.hour, from: instant)) ? "sun.max" : "moon")
@@ -74,7 +98,7 @@ struct WorldClockView: View {
                             Text(city.label(instant, format: "M/d(E)")).font(.caption).foregroundStyle(.secondary)
                             Text(city.label(instant, format: "HH:mm")).monospacedDigit().fontWeight(.semibold)
                         }
-                        strip(ticks.map(city.working))
+                        strip(row.active)
                     }.accessibilityElement(children: .combine)
                 }
                 Divider()
@@ -121,25 +145,27 @@ struct WorldClockView: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
     private var settings: some View {
-        ScrollView {
+        let rows = cities
+        let selectedIDs = Set(rows.map(\.id))
+        return ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("平日の勤務時間（各都市の現地時刻）").font(.caption)
-                ForEach(cities) { city in
+                ForEach(rows) { city in
                     VStack(alignment: .leading) {
                         HStack {
                             Text(city.name).fontWeight(.medium)
                             Spacer()
-                            Button { store(cities.filter { $0.id != city.id }) } label: { Image(systemName: "minus.circle") }.disabled(cities.count == 1)
+                            Button { store(cities.filter { $0.id != city.id }) } label: { Image(systemName: "minus.circle") }.disabled(rows.count == 1)
                         }
                         HStack { hourPicker(city, start: true); Text("–"); hourPicker(city, start: false) }
                     }
                 }
                 Menu("都市を追加") {
                     ForEach(WorkCity.names.keys.sorted(), id: \.self) { id in
-                        if !cities.contains(where: { $0.id == id }) { Button(WorkCity(id: id).name) { store(cities + [WorkCity(id: id)]) } }
+                        if !selectedIDs.contains(id) { Button(WorkCity(id: id).name) { store(cities + [WorkCity(id: id)]) } }
                     }
                     Menu("その他のタイムゾーン") {
-                        ForEach(TimeZone.knownTimeZoneIdentifiers.filter { $0.contains("/") && !WorkCity.names.keys.contains($0) && !cities.map(\.id).contains($0) }, id: \.self) { id in
+                        ForEach(TimeZone.knownTimeZoneIdentifiers.filter { $0.contains("/") && WorkCity.names[$0] == nil && !selectedIDs.contains($0) }, id: \.self) { id in
                             Button(id) { store(cities + [WorkCity(id: id)]) }
                         }
                     }

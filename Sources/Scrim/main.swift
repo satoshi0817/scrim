@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Injectable: previews/tests never need to present the production panel.
     var chooseFiles: (@escaping ([URL]) -> Void) -> Void = { completion in
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.pdf, .html, .plainText, UTType(filenameExtension: "xhtml") ?? .html,
+        panel.allowedContentTypes = [.pdf, .html, .plainText, .rtf, UTType(filenameExtension: "xhtml") ?? .html,
                                     UTType(filenameExtension: "md") ?? .plainText, UTType(filenameExtension: "log") ?? .plainText]
         panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
         panel.begin { response in completion(response == .OK ? panel.urls : []) }
@@ -146,6 +146,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      ("コピー", "copy:", "c"), ("ペースト", "paste:", "v"), ("すべてを選択", "selectAll:", "a")] {
             editMenu.addItem(withTitle: title, action: NSSelectorFromString(action), keyEquivalent: key)
         }
+        let redo = NSMenuItem(title: "やり直す", action: NSSelectorFromString("redo:"), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.insertItem(redo, at: 1)
         edit.submenu = editMenu; main.addItem(edit)
         let view = NSMenuItem(); let viewMenu = NSMenu(title: "表示")
         viewMenu.addItem(withTitle: "レイアウトを編集…", action: #selector(editLayout), keyEquivalent: "").target = self
@@ -193,6 +196,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
     @objc func quit() { NSApp.terminate(nil) }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let editor = overlay?.panel.firstResponder as? NoteTextView { editor.window?.makeFirstResponder(nil) }
+        guard overlay?.notes.saveAll() == false else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "保存できていないメモがあります"
+        alert.window.level = NSWindow.Level(rawValue: overlay.panel.level.rawValue + 1)
+        alert.informativeText = "編集に戻ると、メモの保存を再試行できます。"
+        alert.addButton(withTitle: "編集に戻る")
+        alert.addButton(withTitle: "保存せずに終了").hasDestructiveAction = true
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
     func applicationWillTerminate(_ notification: Notification) { input.stop(); gestureInput.stop() }
 }
 

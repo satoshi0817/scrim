@@ -50,6 +50,13 @@ public struct PanelPacking {
             }
             remaining -= Int(rect.width * rect.height)
         }
+        func isFree(_ rect: CGRect) -> Bool {
+            for y in Int(rect.minY)..<Int(rect.maxY) {
+                let start = y * columns + Int(rect.minX)
+                if occupied[start..<(start + Int(rect.width))].contains(true) { return false }
+            }
+            return true
+        }
         reserve(tile)
         guard remaining >= others.count else { return nil }
         var result = originals
@@ -62,6 +69,11 @@ public struct PanelPacking {
         for (offset, index) in order.enumerated() {
             let original = originals[index]
             let budget = remaining - (others.count - offset - 1)
+            // An unchanged tile is the unique zero-cost fit if it leaves enough cells for later tiles.
+            if Int(original.width * original.height) <= budget && isFree(original) {
+                reserve(original)
+                continue
+            }
             var best: CGRect?
             var bestCost = CGFloat.infinity
             for y in 0..<rows {

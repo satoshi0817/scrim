@@ -25,7 +25,7 @@ struct PanelGallery: View {
     private let content = [
         Entry(0,"ウェブページ","URLを指定してサイトを表示","safari.fill",ScrimPalette.blue),
         Entry(5,"Notionビュー","データベースのビューを表示","tablecells.fill",.secondary),
-        Entry(1,"テキスト","入力したメモや文章を表示","text.alignleft",ScrimPalette.amber),
+        Entry(1,"テキスト","箇条書きや番号付きのメモを書く","text.alignleft",ScrimPalette.amber),
         Entry(2,"HTML","入力したHTMLをページとして表示","chevron.left.forwardslash.chevron.right",ScrimPalette.button),
         Entry(3,"ファイル","PDF・テキスト・HTMLを開く","doc.fill",ScrimPalette.blue),
         Entry(4,"HTMLを取り込む","画像やCSSを含むページを保存","folder.fill",ScrimPalette.amber)

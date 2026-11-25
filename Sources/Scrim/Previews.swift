@@ -42,7 +42,7 @@ func renderPreviews(directory: URL) throws {
             }
             if state == "menu" {
                 let box = NSView(frame: NSRect(x: 1430, y: 470, width: 240, height: 160)); box.wantsLayer = true; box.layer?.backgroundColor = NSColor.darkGray.cgColor; box.layer?.cornerRadius = 10
-                for (i, title) in ["更新", "既定のアプリで開く", "複製", "パネルを閉じる"].enumerated() { let text = label(title); text.frame = NSRect(x: 18, y: 125-CGFloat(i)*36, width: 210, height: 26); box.addSubview(text) }; root.addSubview(box)
+                for (i, title) in ["更新", "デフォルトブラウザで開く", "複製", "パネルを閉じる"].enumerated() { let text = label(title); text.frame = NSRect(x: 18, y: 125-CGFloat(i)*36, width: 210, height: 26); box.addSubview(text) }; root.addSubview(box)
             }
         }
         root.layoutSubtreeIfNeeded()

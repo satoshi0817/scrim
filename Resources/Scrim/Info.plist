@@ -65,11 +65,13 @@
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>public.plain-text</string>
+				<string>public.rtf</string>
 				<string>net.daringfireball.markdown</string>
 			</array>
 			<key>CFBundleTypeExtensions</key>
 			<array>
 				<string>txt</string>
+				<string>rtf</string>
 				<string>text</string>
 				<string>md</string>
 				<string>markdown</string>

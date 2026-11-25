@@ -17,16 +17,22 @@ class Handler(BaseHTTPRequestHandler):
             self.html('''<title>Scrim ブラウザ確認</title><h1>Scrim</h1><p>タイトルバーなしのパネルです。</p>
 <p>通常時はページを操作でき、編集時はパネルを移動できます。</p>
 <button id="login" onclick="window.open('/popup','scrim-login')">別窓でログイン（テスト）</button>
-<p><a id="blank" href="/popup" target="_blank">新しいウィンドウ（テスト）</a></p>
+<p><a id="normal" href="/destination?source=panel%2Fweb#detail">資料を開く</a></p>
+<p><a id="blank" href="/destination?source=blank#detail" target="_blank">別タブで資料を開く</a></p>
+<p><a id="router" href="/destination?source=router" onclick="event.preventDefault(); history.pushState({}, '', this.href)"><span>サイト内の資料を開く</span></a></p>
+<p><a id="fragment" href="#login">ページ内のログインボタンへ</a></p>
 <p><input placeholder="通常時の入力を確認"></p>
 <script>document.cookie='opener=present; SameSite=Lax; path=/';
 addEventListener('storage',e=>{if(e.key==='oAuthQuery' && e.newValue)localStorage.setItem('storageCallback','received')});
 addEventListener('message',e=>{if(e.origin===location.origin && e.data==='complete')location.href='/signed-in'});</script>''')
+        elif self.path.partition('?')[0] == '/destination':
+            self.html('<title>Scrim リンク確認</title><h1 id="detail">リンク先の資料</h1>')
         elif self.path == '/popup':
             if 'opener=present' not in self.headers.get('Cookie', ''):
                 self.html('<h1>cookie-sharing-failed</h1>')
             else:
                 self.html('''<title>ログイン確認</title><h1>テスト用ログイン</h1>
+<p><a id="account" href="/account" onclick="event.preventDefault(); document.body.dataset.account='selected'">アカウントを選択</a></p>
 <form action="/post" method="post"><input type="hidden" name="token" value="synthetic-only">
 <button id="continue">ログインを完了（テスト）</button></form>''')
         elif self.path == '/complete':

@@ -12,7 +12,7 @@ public enum PanelSource: Equatable {
         switch url.pathExtension.lowercased() {
         case "pdf": return .pdf(url)
         case "html", "htm", "xhtml": return .html(url)
-        case "txt", "text", "md", "markdown", "log": return .text(url)
+        case "txt", "text", "md", "markdown", "log", "rtf": return .text(url)
         case "":
             // Only extensionless files are sniffed; never read beyond the PDF signature.
             do {
@@ -45,7 +45,7 @@ public struct FilePanelState {
         if source == .unreadable {
             if url.isFileURL && !FileManager.default.fileExists(atPath: url.path) {
                 failureReason = .missing
-            } else if ["pdf", "html", "htm", "xhtml", "txt", "text", "md", "markdown", "log"].contains(url.pathExtension.lowercased()) {
+            } else if ["pdf", "html", "htm", "xhtml", "txt", "text", "md", "markdown", "log", "rtf"].contains(url.pathExtension.lowercased()) {
                 failureReason = .loadFailure
             } else { failureReason = .unsupported }
         }

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WebKit
+import PDFKit
 import ScrimCore
 
 private enum CheckError: Error { case failed(String) }
@@ -20,6 +21,28 @@ private func javascript(_ script: String, in web: WKWebView) throws -> Any? {
     try waitFor("JavaScript") { complete }
     if let failure { throw failure }
     return result
+}
+
+/// Deliver a pointer click to WebKit so the document receives a trusted DOM event.
+private func clickElement(_ id: String, in web: WKWebView) throws {
+    let coordinates = try javascript("""
+        (() => {
+            const element = document.getElementById('\(id)');
+            element.scrollIntoView({block: 'center'});
+            const rect = element.getBoundingClientRect();
+            return [rect.left + rect.width / 2, rect.top + rect.height / 2];
+        })()
+        """, in: web) as? [CGFloat]
+    guard let coordinates, coordinates.count == 2, let window = web.window else {
+        throw CheckError.failed("Missing click target: " + id)
+    }
+    let point = NSPoint(x: coordinates[0], y: web.isFlipped ? coordinates[1] : web.bounds.height - coordinates[1])
+    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+        let event = NSEvent.mouseEvent(with: type, location: web.convert(point, to: nil), modifierFlags: [],
+                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                      context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+        if type == .leftMouseDown { web.mouseDown(with: event) } else { web.mouseUp(with: event) }
+    }
 }
 
 /// Runs against a synthetic local server, memory settings, and an ephemeral cookie
@@ -69,14 +92,33 @@ func verifyInteractions(fixture: URL) throws {
     controller.setEditing(false)
     guard let web = view.web else { throw CheckError.failed("Missing WebKit view") }
     try waitFor("main page") { web.url?.path == "/login" && !web.isLoading }
-    _ = try javascript("document.getElementById('blank').click()", in: web)
-    try waitFor("target blank popup") { view.browser.popupWebViews.first?.url?.path == "/popup" && view.browser.popupWebViews.first?.isLoading == false }
-    view.browser.closeAll()
+    var opened: [URL] = []
+    view.browser.openWebLink = { opened.append($0) }
+    var expected: [URL] = []
+    for (id, path) in [("normal", "/destination?source=panel%2Fweb#detail"),
+                       ("blank", "/destination?source=blank#detail"), ("router", "/destination?source=router")] {
+        expected.append(URL(string: path, relativeTo: fixture)!.absoluteURL)
+        try clickElement(id, in: web)
+        try waitFor(id + " link") { opened.count >= expected.count }
+        try check(opened == expected && web.url == fixture && !view.browser.hasOpenWindows,
+                  "Each link must open the original URL once and keep its panel on the original page: " + id)
+    }
+    controller.setEditing(true)
+    view.command?(1)
+    controller.setEditing(false)
+    expected.append(fixture)
+    try check(opened == expected, "The panel menu must use the same browser opener")
+    try clickElement("fragment", in: web)
+    try waitFor("same-page link") { web.url?.fragment == "login" }
     _ = try javascript("document.getElementById('login').click()", in: web)
     try waitFor("popup") { view.browser.popupWebViews.first?.url?.path == "/popup" && view.browser.popupWebViews.first?.isLoading == false }
     guard let popup = view.browser.popupWebViews.first else { throw CheckError.failed("Missing popup") }
     let text = try javascript("document.body.innerText", in: popup) as? String ?? ""
     try check(text.contains("テスト用ログイン"), "Popup must receive opener cookies")
+    try clickElement("account", in: popup)
+    try waitFor("account selection inside the login popup") {
+        (try? javascript("document.body.dataset.account", in: popup) as? String) == "selected"
+    }
     view.sleep()
     try check(view.web === web, "An OAuth opener must stay alive while popup is open")
     _ = try javascript("document.getElementById('continue').click()", in: popup)
@@ -86,13 +128,22 @@ func verifyInteractions(fixture: URL) throws {
     let storageCallback = try javascript("localStorage.getItem('storageCallback')", in: web) as? String
     try check(storageCallback == "received", "Calendar-style storage callback must reach opener")
     try waitFor("window.close") { !view.browser.hasOpenWindows }
+    try check(opened == expected, "Fragment, login, POST and redirects must stay in Scrim")
     view.reloadContent()
     try waitFor("restored session") { view.web?.isLoading == false && view.web?.url?.path == "/signed-in" }
     let restored = try javascript("document.body.innerText", in: view.web!) as? String ?? ""
     try check(restored.contains("signed-in"), "Recreated WebKit view must retain session")
-    controller.setEditing(true); view.command?(3)
-    try check(controller.records.isEmpty, "Edit mode must permit closure")
-    print("PASS: mode lock, title-free content, display-relative grid drag, edit-only add/close, OAuth popup, cookies, POST redirect, opener + storage callbacks, window.close, session restoration")
+    controller.setEditing(true)
+    for _ in 0..<PanelPool.liveLimit { controller.add(fixture) }
+    try waitFor("dormant WebKit panel") { view.web == nil }
+    let preview = try view.subviews.compactMap { $0 as? NSImageView }.first.unwrap("Missing dormant preview")
+    try check(!preview.isHidden && preview.image != nil, "Eviction must show a snapshot")
+    controller.touch(record.id)
+    try waitFor("wake after eviction") { view.web?.isLoading == false && view.web?.url?.path == "/signed-in" }
+    try check(preview.isHidden && preview.image == nil, "The live WebView must release its previous snapshot")
+    view.command?(3)
+    try check(controller.views[record.id] == nil && controller.records.count == PanelPool.liveLimit, "Edit mode must close only the selected panel")
+    print("PASS: regular, target-blank, router and menu links; same-page anchor; mode lock, grid drag, edit-only add/close, OAuth popup, cookies, POST redirect, opener + storage callbacks, window.close, session restoration")
 }
 
 func inspectCalendarLogin() throws {
@@ -220,9 +271,142 @@ func verifyInputMonitoringRecovery() throws {
     print("PASS: grant/revoke/re-grant, effective tap failure, timeout recovery, retry limiting, secure input, stop, CLI isolation; no OS permission changes")
 }
 
+private func verifyNoteEditing(in directory: URL) throws {
+    let files = PanelDocumentStorage(directory: directory)
+    let controller = OverlayController(store: SettingsStore(storage: MemorySettingsStorage()), websiteDataStore: .nonPersistent(), documentStorage: files)
+    controller.show(.pinned, immediately: true)
+    defer { controller.show(.hidden, immediately: true) }
+    controller.setEditing(true)
+    controller.addNote()
+    let panel = try controller.views.values.first.unwrap("Missing new note")
+    func noteView(_ panel: PanelView) throws -> NativeNotePanel {
+        try panel.subviews.compactMap { $0 as? NativeNotePanel }.first.unwrap("Missing native note editor")
+    }
+    let memo = try noteView(panel), editor = memo.editor
+    try check(!controller.editing && editor.isEditable && controller.panel.firstResponder === editor, "Adding a note must focus its body")
+    func press(_ format: NoteFormat) throws {
+        let button = try memo.subviews.compactMap { $0 as? NSButton }.first(where: { $0.toolTip == format.label }).unwrap("Missing note format button")
+        button.performClick(nil)
+    }
+    func type(_ text: String, in view: NSTextView) { view.insertText(text, replacementRange: view.selectedRange()) }
+    func list(at word: String, in text: NSAttributedString) -> NSTextList? {
+        let index = (text.string as NSString).range(of: word).location
+        guard index != NSNotFound else { return nil }
+        return (text.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle)?.textLists.last
+    }
+    try press(.numbers)
+    type("牛乳", in: editor)
+    editor.insertNewline(nil)
+    type("卵", in: editor)
+    let numbered = try list(at: "卵", in: memo.note.text).unwrap("Return must continue an ordered list")
+    try check(numbered.isOrdered && memo.note.text.itemNumber(in: numbered, at: (editor.string as NSString).range(of: "卵").location) == 2,
+              "The second item must be numbered 2")
+    editor.insertNewline(nil)
+    editor.insertNewline(nil)
+    type("買い物メモ", in: editor)
+    try check(list(at: "買い物メモ", in: memo.note.text) == nil, "Return on a blank item must finish the list")
+    editor.setSelectedRange((editor.string as NSString).range(of: "牛乳\n卵"))
+    try press(.bullets)
+    try check(list(at: "牛乳", in: memo.note.text)?.isOrdered == false && list(at: "卵", in: memo.note.text)?.isOrdered == false,
+              "The toolbar must convert all selected paragraphs to bullets")
+    try press(.bullets)
+    try check(list(at: "牛乳", in: memo.note.text) == nil, "Pressing the active list style must restore plain paragraphs")
+    try press(.numbers)
+    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    try press(.bullets)
+    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    memo.note.undo.undo()
+    try check(list(at: "卵", in: memo.note.text)?.isOrdered == true && memo.note.undo.canRedo, "Undo must restore the preceding list style")
+    memo.note.undo.redo()
+    try check(list(at: "卵", in: memo.note.text)?.isOrdered == false, "Redo must restore bullets")
+    try press(.numbers)
+    editor.setSelectedRange((editor.string as NSString).range(of: "買い物メモ"))
+    try press(.bold)
+    try press(.underline)
+    try waitFor("formatted note autosave") {
+        guard let saved = try? PanelDocumentStorage.readText(at: panel.url), saved.string == editor.string,
+              let font = saved.attribute(.font, at: editor.selectedRange().location, effectiveRange: nil) as? NSFont else { return false }
+        return NSFontManager.shared.traits(of: font).contains(.boldFontMask) &&
+            saved.attribute(.underlineStyle, at: editor.selectedRange().location, effectiveRange: nil) as? Int == NSUnderlineStyle.single.rawValue &&
+            list(at: "卵", in: saved)?.isOrdered == true
+    }
+    controller.setEditing(true)
+    try check(!editor.isEditable && controller.panel.firstResponder !== editor, "Moving a panel must release text input")
+    panel.command?(2)
+    let duplicate = try controller.views.values.first(where: { $0.id != panel.id }).unwrap("Missing duplicate note")
+    let second = try noteView(duplicate)
+    try check(second.note === memo.note, "Duplicate panels must share their document")
+    duplicate.command?(4)
+    try check(controller.panel.firstResponder === second.editor, "Edit note from the layout menu must focus the chosen copy")
+    second.editor.setSelectedRange(NSRange(location: 0, length: 0))
+    type("今週の", in: second.editor)
+    try check(editor.string == second.editor.string && editor.string.hasPrefix("今週の"), "Edits must reach both copies")
+    controller.show(.hidden, immediately: true)
+    let reopened = try PanelNotes(files: files).open(panel.url)
+    try check(reopened.text.string == editor.string && list(at: "卵", in: reopened.text)?.isOrdered == true,
+              "Hiding immediately after typing must save text and formatting for the next launch")
+
+    let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let legacyURL = folder.appendingPathComponent("note.txt"), original = "以前のメモ 👋"
+    try original.write(to: legacyURL, atomically: true, encoding: .utf8)
+    controller.show(.pinned, immediately: true)
+    controller.setEditing(true)
+    controller.add(legacyURL)
+    let legacy = try controller.views.values.first(where: { $0.url == legacyURL }).unwrap("Missing legacy note")
+    legacy.command?(4)
+    let legacyEditor = try noteView(legacy).editor
+    try check(legacyEditor.string == original && files.contentURL(for: legacyURL) == legacyURL, "Reading a legacy note must preserve the original file")
+    legacyEditor.setSelectedRange(NSRange(location: (original as NSString).length, length: 0))
+    type(" 追記", in: legacyEditor)
+    legacy.sleep()
+    let migrated = try PanelNotes(files: files).open(legacyURL)
+    let originalFile = try String(contentsOf: legacyURL)
+    try check(originalFile == original && migrated.text.string == original + " 追記" && files.contentURL(for: legacyURL).pathExtension == "rtf",
+              "Legacy layout URLs must reopen rich notes and preserve the original UTF-8")
+    let external = directory.deletingLastPathComponent().appendingPathComponent("external-note.rtf")
+    let linkURL = URL(string: "https://example.org/reference#note")!
+    let source = NSAttributedString(string: "外部ファイルの本文", attributes: [.link: linkURL])
+    let originalBytes = try source.data(from: NSRange(location: 0, length: source.length),
+                                        documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+    try originalBytes.write(to: external)
+    controller.setEditing(true)
+    controller.add(external)
+    let externalPanel = try controller.views.values.first(where: { $0.url == external }).unwrap("Missing external file panel")
+    let reader = try (externalPanel.subviews.compactMap { $0 as? NativeTextPanel }.first?.documentView as? PanelTextView).unwrap("Missing RTF reader")
+    externalPanel.command?(26)
+    let copy = try controller.records.last.flatMap { controller.views[$0.id] }.unwrap("Missing editable copy")
+    let editableCopy = try noteView(copy)
+    try check(copy.url != external && editableCopy.editor.string == "外部ファイルの本文" && editableCopy.editor.isEditable,
+              "Copying an external file must open a managed note")
+    var opened: [URL] = []
+    for view in [reader, editableCopy.editor] {
+        let link = try view.attributedString().attribute(.link, at: 0, effectiveRange: nil).unwrap("The RTF link must survive copying")
+        view.openWebLink = { opened.append($0) }
+        view.clicked(onLink: link, at: 0)
+    }
+    try check(opened == [linkURL, linkURL], "Both read-only and editable text must route their link through the browser opener")
+    let restoredFile = copy.url.deletingLastPathComponent().appendingPathComponent("original.rtf")
+    try FileManager.default.moveItem(at: copy.url, to: restoredFile)
+    try FileManager.default.createDirectory(at: copy.url, withIntermediateDirectories: false)
+    type("追記", in: editableCopy.editor)
+    try check(!controller.notes.saveAll() && editableCopy.note.saveError != nil, "A failed atomic save must retain the pending document")
+    try FileManager.default.removeItem(at: copy.url)
+    try FileManager.default.moveItem(at: restoredFile, to: copy.url)
+    let retry = try editableCopy.subviews.compactMap { $0 as? NSButton }.first(where: { $0.action == NSSelectorFromString("retrySave") }).unwrap("Missing save retry")
+    try check(!retry.isHidden, "Save failure must expose a retry action")
+    retry.performClick(nil)
+    let recovered = try PanelDocumentStorage.readText(at: copy.url)
+    let externalBytes = try Data(contentsOf: external)
+    try check(retry.isHidden && recovered.string == editableCopy.editor.string && externalBytes == originalBytes,
+              "Retry must save the pending edit and preserve the external file")
+    print("PASS: inline note creation, lists and Return, character styles, undo/redo, autosave and retry, duplicate editors, legacy notes and external file copies")
+}
+
 func verifyContentPanels() throws {
     let temp = FileManager.default.temporaryDirectory.appendingPathComponent("Scrim-Content-"+UUID().uuidString, isDirectory: true)
     defer { try? FileManager.default.removeItem(at: temp) }
+    try verifyNoteEditing(in: temp.appendingPathComponent("notes", isDirectory: true))
     let documents = PanelDocumentStorage(directory: temp.appendingPathComponent("managed", isDirectory: true))
     let controller = OverlayController(store: SettingsStore(storage: MemorySettingsStorage()), websiteDataStore: .nonPersistent(), documentStorage: documents)
     controller.show(.pinned); controller.setEditing(true)
@@ -233,20 +417,29 @@ func verifyContentPanels() throws {
     guard let text = controller.views.values.first else { throw CheckError.failed("Missing text panel") }
     text.layoutSubtreeIfNeeded()
     func textView(_ panel: PanelView) -> NSTextView? {
-        (panel.subviews.compactMap { $0 as? NativeTextPanel }.first?.documentView as? NSTextView)
+        panel.subviews.compactMap { $0 as? NativeNotePanel }.first?.editor ??
+            (panel.subviews.compactMap { $0 as? NativeTextPanel }.first?.documentView as? NSTextView)
     }
-    try check(textView(text)?.string == contents && textView(text)?.isEditable == false, "Text must render literally in a read-only native view")
+    try check(textView(text)?.string == contents && textView(text)?.isEditable == false, "Layout editing must lock the note and display its literal text")
     try check(text.canEditContent, "Managed contents must expose edit action")
     let updated = "更新したメモ"
     try documents.replace(updated, at: textURL); text.reloadContent()
     try check(textView(text)?.string == updated, "Edited text must reload")
     text.sleep(); text.wake()
     try check(textView(text)?.string == updated, "Text must survive sleep and wake")
+    try check(!text.subviews.contains { $0 is FilePanelErrorView }, "A readable file must not allocate an error view")
+    try FileManager.default.removeItem(at: textURL)
+    text.reloadContent()
+    let errorView = try text.subviews.compactMap { $0 as? FilePanelErrorView }.first.unwrap("Missing file error view")
+    try check(!errorView.isHidden && text.fileState.failureReason == .missing, "A missing file must show the existing error")
+    try documents.replace(updated, at: textURL)
+    text.reloadContent()
+    try check(errorView.isHidden && textView(text)?.string == updated, "Reloading a restored file must dismiss the error")
     let utf16 = temp.appendingPathComponent("unicode.txt")
     try "UTF-16 のテキスト".write(to: utf16, atomically: true, encoding: .utf16)
     controller.add(utf16)
     guard let external = controller.views.values.first(where: { $0.url == utf16 }) else { throw CheckError.failed("Missing external text") }
-    try check(textView(external)?.string == "UTF-16 のテキスト" && !external.canEditContent, "External text must decode without exposing managed editing")
+    try check(textView(external)?.string == "UTF-16 のテキスト" && textView(external)?.isEditable == false && !external.canEditContent, "External text must decode without exposing managed editing")
     do {
         try documents.replace("unexpected", at: utf16)
         throw CheckError.failed("Managed editor must not write external files")
@@ -264,7 +457,13 @@ func verifyContentPanels() throws {
     try FileManager.default.createDirectory(at: source.appendingPathComponent("pages"), withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: source.appendingPathComponent("assets"), withIntermediateDirectories: true)
     let entry = source.appendingPathComponent("pages/start.html")
-    try "<!doctype html><meta charset='utf-8'><link rel='stylesheet' href='../assets/style.css'><h1>Embedded file</h1><img src='../assets/logo.svg'><script src='../assets/app.js'></script>".write(to: entry, atomically: true, encoding: .utf8)
+    let reference = URL(string: "https://app.slack.com/client/T123/C456?thread_ts=1234567890.123456#detail")!
+    try """
+        <!doctype html><meta charset='utf-8'><link rel='stylesheet' href='../assets/style.css'>
+        <h1>Embedded file</h1><img src='../assets/logo.svg'><script src='../assets/app.js'></script>
+        <a id='reference' href='\(reference.absoluteString)'>Reference</a><a id='next' href='next.html'>Next</a>
+        """.write(to: entry, atomically: true, encoding: .utf8)
+    try "<title>Next page</title>".write(to: entry.deletingLastPathComponent().appendingPathComponent("next.html"), atomically: true, encoding: .utf8)
     try "h1 { color: rgb(12, 34, 56); }".write(to: source.appendingPathComponent("assets/style.css"), atomically: true, encoding: .utf8)
     try "window.importedScript = 'working';".write(to: source.appendingPathComponent("assets/app.js"), atomically: true, encoding: .utf8)
     try "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><rect width='24' height='24' fill='blue'/></svg>".write(to: source.appendingPathComponent("assets/logo.svg"), atomically: true, encoding: .utf8)
@@ -281,8 +480,30 @@ func verifyContentPanels() throws {
     try check(style == "rgb(12, 34, 56)" && script == "working" && image == 24, "Imported HTML must retain nested relative images/CSS/JS after deleting source")
     let root = try documents.resourceRoot(for: imported).unwrap("Missing imported resource root")
     try check(root != imported.deletingLastPathComponent(), "Nested entry must use its isolated package root")
+    var opened: [URL] = []
+    embedded.browser.openWebLink = { opened.append($0) }
+    _ = try javascript("document.getElementById('reference').click()", in: embeddedWeb)
+    try waitFor("Web link from local HTML") { !opened.isEmpty }
+    try check(opened == [reference] && embeddedWeb.url == imported, "A Slack link in HTML must keep its HTTPS URL")
+    _ = try javascript("document.getElementById('next').click()", in: embeddedWeb)
+    try waitFor("relative HTML link") { embeddedWeb.url?.lastPathComponent == "next.html" && !embeddedWeb.isLoading }
+
+    let pdfURL = temp.appendingPathComponent("links.pdf")
+    let pdf = PDFDocument(), page = PDFPage()
+    let annotation = PDFAnnotation(bounds: CGRect(x: 20, y: 20, width: 100, height: 20), forType: .link, withProperties: nil)
+    annotation.url = reference
+    page.addAnnotation(annotation)
+    pdf.insert(page, at: 0)
+    try check(pdf.write(to: pdfURL), "Could not write PDF link fixture")
+    controller.add(pdfURL)
+    let pdfPanel = try controller.views.values.first(where: { $0.url == pdfURL }).unwrap("Missing PDF panel")
+    pdfPanel.browser.openWebLink = { opened.append($0) }
+    let pdfView = try pdfPanel.subviews.compactMap { $0 as? PDFView }.first.unwrap("Missing PDF view")
+    let action = try (pdfView.document?.page(at: 0)?.annotations.first?.action).unwrap("Missing PDF link action")
+    pdfView.perform(action)
+    try check(opened == [reference, reference], "PDFKit must send the link to the same browser opener exactly once")
     print("PASS: managed text/HTML creation, literal native text, Unicode decoding, edit/reload, sleep/wake, external-write guard, per-document HTML scope, close preserves file")
-    print("PASS: HTML folder import, nested entry, relative images/CSS/JS, original source removal")
+    print("PASS: HTML folder import, nested entry, relative images/CSS/JS and pages, original source removal, HTML and PDF web links")
 }
 
 private extension Optional {
@@ -325,9 +546,10 @@ private struct FixtureWeather: WeatherProviding {
     let sf = WorkCity(id: "America/Los_Angeles")
     let beforeDST = iso.date(from: "2026-03-06T16:00:00Z")!
     let afterDST = iso.date(from: "2026-03-09T16:00:00Z")!
-    try check(!sf.working(beforeDST) && sf.working(afterDST) && london.working(afterDST), "US and UK daylight-saving rules must be independent")
+    try check(sf.workingSlots([beforeDST, afterDST]) == [false, true] && london.workingSlots([afterDST]) == [true], "US and UK daylight-saving rules must be independent")
     let overnight = WorkCity(id: "Asia/Tokyo", start: 22, end: 6)
-    try check(overnight.working(iso.date(from: "2026-03-06T17:00:00Z")!) && !overnight.working(iso.date(from: "2026-03-08T17:00:00Z")!), "Night shifts must use the weekday on which the shift starts")
+    let nightShifts = ["2026-03-06T17:00:00Z", "2026-03-08T17:00:00Z"].map { iso.date(from: $0)! }
+    try check(overnight.workingSlots(nightShifts) == [true, false], "Night shifts must use the weekday on which the shift starts")
     func calculate(_ keys: [String]) -> String {
         var calculator = BasicCalculator()
         for key in keys { calculator.press(key) }
@@ -346,6 +568,10 @@ private struct FixtureWeather: WeatherProviding {
     let meet = URL(string: "https://meet.google.com/abc-defg-hij")!
     var laterMeeting = timedEvent(600)
     laterMeeting.meetingURL = meet
+    let hiddenUntil = [laterMeeting.id: laterMeeting.end.timeIntervalSince1970]
+    try check(MeetingNotchBadge.isHidden(laterMeeting, occurrences: hiddenUntil, now: urgencyNow) &&
+              !MeetingNotchBadge.isHidden(laterMeeting, occurrences: hiddenUntil, now: laterMeeting.end),
+              "An occurrence must become eligible again at its stored expiry")
     func badge(_ events: [UpcomingEvent], limit: Int = 3, online: Bool = false) -> UpcomingEvent? {
         MeetingNotchBadge.candidate(events, now: urgencyNow, lead: 10, limit: limit, onlineOnly: online)
     }
@@ -512,22 +738,24 @@ private struct FixtureWeather: WeatherProviding {
     let widgets = controller.views.values.compactMap { $0.subviews.compactMap { $0 as? NativeWidgetPanel }.first }
     try check(widgets.count == WidgetKind.allCases.count && widgets.allSatisfy { $0.model.active }, "Widgets must be active while shown")
     let agenda = try widgets.first(where: { $0.model.spec.kind == .upcoming }).unwrap("Missing agenda widget")
+    let agendaModel = try agenda.model.upcoming.unwrap("Missing agenda event model")
+    try check(widgets.compactMap { $0.model.upcoming }.count == 1, "Only the agenda widget needs a calendar event store")
     try check(agenda.model.isEditing, "Agenda settings button must appear while editing")
-    let presentation = agenda.model.upcoming.presentationRevision
+    let presentation = agendaModel.presentationRevision
     controller.show(.hidden, immediately: true)
     controller.show(.peek, immediately: true)
-    try check(agenda.model.upcoming.presentationRevision == presentation + 1, "Reopening must reset agenda scroll when enabled")
+    try check(agendaModel.presentationRevision == presentation + 1, "Reopening must reset agenda scroll when enabled")
     controller.show(.pinned, immediately: true)
-    try check(agenda.model.upcoming.presentationRevision == presentation + 1, "Pinning a visible peek must preserve scroll")
+    try check(agendaModel.presentationRevision == presentation + 1, "Pinning a visible peek must preserve scroll")
     store.agendaResetsScrollOnOpen = false
     controller.show(.hidden, immediately: true)
     controller.show(.pinned, immediately: true)
-    try check(agenda.model.upcoming.presentationRevision == presentation + 1, "Disabled reset must preserve scroll on reopen")
+    try check(agendaModel.presentationRevision == presentation + 1, "Disabled reset must preserve scroll on reopen")
     controller.setEditing(true)
-    agenda.model.upcoming.select([options[0].id])
-    agenda.model.upcoming.setDisplayDays(14)
-    let persistedKeyword = agenda.model.upcoming.addExcludedKeyword()
-    agenda.model.upcoming.editExcludedKeyword(persistedKeyword, text: "除外する予定")
+    agendaModel.select([options[0].id])
+    agendaModel.setDisplayDays(14)
+    let persistedKeyword = agendaModel.addExcludedKeyword()
+    agendaModel.editExcludedKeyword(persistedKeyword, text: "除外する予定")
     let agendaRecord = try store.panels.first(where: { WidgetSpec(url: $0.url)?.kind == .upcoming }).unwrap("Missing saved agenda")
     try check(WidgetSpec(url: agendaRecord.url)?.calendarIDs == chosen && WidgetSpec(url: agendaRecord.url)?.agendaDays == 14 && WidgetSpec(url: agendaRecord.url)?.excludedKeywords == ["除外する予定"], "Calendar filter, day count and keywords must persist together on the panel")
     agenda.superview?.layoutSubtreeIfNeeded()
@@ -535,7 +763,7 @@ private struct FixtureWeather: WeatherProviding {
     (agenda.superview as? PanelView)?.performMenuAction(22)
     try check(agenda.allowsControl(at: NSPoint(x: agenda.bounds.midX, y: agenda.bounds.midY)), "Settings face must allow controls through edit-mode hit testing")
     controller.setEditing(false)
-    try check(!agenda.model.upcoming.isConfiguring && !agenda.model.isEditing, "Leaving edit mode must return to agenda face")
+    try check(!agendaModel.isConfiguring && !agenda.model.isEditing, "Leaving edit mode must return to agenda face")
     controller.setEditing(true)
     let weather = try widgets.first(where: { $0.model.spec.kind == .weather }).unwrap("Missing weather widget")
     let deadline = Date().addingTimeInterval(5)
@@ -814,23 +1042,45 @@ func verifyPanelBehavior() throws {
     var openedSettings = false
     controller.onOpenSettings = { openedSettings = true; controller.presentSettings(dialogSettings) }
     let toolbar = try controller.root.subviews.compactMap { $0 as? OverlayControls }.first.unwrap("Missing overlay controls")
-    func sendCommandComma() {
-        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: controller.panel.windowNumber, context: nil, characters: ",", charactersIgnoringModifiers: ",", isARepeat: false, keyCode: 43)!
+    func sendKey(_ code: UInt16, _ characters: String, modifiers: NSEvent.ModifierFlags = []) {
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: controller.panel.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
         NSApp.sendEvent(event)
     }
+    func sendCommandComma() { sendKey(43, ",", modifiers: .command) }
     try check(toolbar.isHidden, "Pinned HUD must start hidden")
     sendCommandComma()
     try check(controller.showingActions && toolbar.isHidden, "Command-comma must open the centered action list")
     sendCommandComma()
     try check(!controller.showingActions, "Command-comma must dismiss the action list")
     sendCommandComma()
-    for (key, chars) in [(125, "\u{f701}"), (36, "\r")] {
-        NSApp.sendEvent(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: controller.panel.windowNumber, context: nil, characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: UInt16(key))!)
-    }
+    sendKey(125, "\u{f701}")
+    sendKey(36, "\r")
     try check(openedSettings && dialogSettings.embeddedWindow === controller.panel && !dialogSettings.window.isVisible,
               "Arrow and Return must open settings inside the overlay")
     controller.closeDialog()
     try check(dialogSettings.embeddedWindow == nil, "Closing settings must release the overlay presentation")
+    do {
+        final class QuitProbe: NSObject, NSApplicationDelegate {
+            var requests = 0
+            func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+                requests += 1
+                return .terminateCancel
+            }
+        }
+        let probe = QuitProbe()
+        let previousDelegate = NSApp.delegate
+        NSApp.delegate = probe
+        defer { NSApp.delegate = previousDelegate }
+        sendCommandComma()
+        sendKey(126, "\u{f700}")
+        sendKey(53, "\u{1b}")
+        try check(probe.requests == 0 && !controller.showingActions, "Escape must dismiss the list without quitting")
+        sendCommandComma()
+        sendKey(125, "\u{f701}")
+        sendKey(125, "\u{f701}")
+        sendKey(36, "\r")
+        try check(probe.requests == 1 && !controller.showingActions, "Choosing Quit must request normal application termination once")
+    }
     _ = try javascript(CalendarWebNavigation.today, in: web)
     _ = try javascript("setTimeout(()=>{const b=document.createElement('button');b.textContent='Today';b.onclick=()=>{window.todayCount++;document.body.dataset.period='today'};document.body.append(b)},100)", in: web)
     try waitFor("asynchronous Today toolbar") { (try? javascript("window.todayCount", in: web) as? Int) == 1 }
@@ -931,7 +1181,7 @@ func verifyPanelBehavior() throws {
               "Deleting a canvas must preserve the neighboring canvas")
     controller.removeCurrentPage(0)
     try check(store.pageCount == 1, "The last canvas stays available")
-    print("PASS: launch URL cleanup, interactive peek and preference, native WebKit click, Command normalization, settings route, delayed Today reset, browse-after-reset, cancellation")
+    print("PASS: launch URL cleanup, interactive peek and preference, native WebKit click, Command normalization, settings and quit actions, delayed Today reset, browse-after-reset, cancellation")
 }
 
 

@@ -302,8 +302,9 @@ public final class SettingsStore {
         return index == 0 ? key : "page.\(index).\(key)"
     }
     public func panelsAcrossPages(display: String) -> [PanelRecord] {
-        (0..<pageCount).flatMap { index -> [PanelRecord] in
-            if !sameLayoutOnAllDisplays {
+        let shared = sameLayoutOnAllDisplays
+        return (0..<pageCount).flatMap { index -> [PanelRecord] in
+            if !shared {
                 let layouts: [String: DisplayLayout] = read(pageKey("layoutsByDisplay", page: index), fallback: [:])
                 if let layout = layouts[display] { return layout.panels }
             }

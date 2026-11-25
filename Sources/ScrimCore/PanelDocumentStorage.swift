@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 public enum PanelImportError: LocalizedError {
     case outsideFolder, containsStorage
@@ -20,14 +20,60 @@ public struct PanelDocumentStorage: Sendable {
             .appendingPathComponent("Scrim/PanelDocuments", isDirectory: true)
     }
     public func create(_ content: String, kind: Kind) throws -> URL {
+        if kind == .text {
+            return try createNote(NSAttributedString(string: content, attributes: [.font: NSFont.systemFont(ofSize: 14)]))
+        }
+        return try createFile(named: "index.html") { try content.write(to: $0, atomically: true, encoding: .utf8) }
+    }
+    public func createNote(_ contents: NSAttributedString) throws -> URL {
+        try createFile(named: "note.rtf") { try saveNote(contents, at: $0) }
+    }
+    private func createFile(named name: String, write: (URL) throws -> Void) throws -> URL {
         let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let url = folder.appendingPathComponent(kind == .html ? "index.html" : "note.txt")
-        try content.write(to: url, atomically: true, encoding: .utf8)
-        return url
+        let url = folder.appendingPathComponent(name)
+        do {
+            try write(url)
+            return url
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            throw error
+        }
     }
     public func owns(_ url: URL) -> Bool {
         url.isFileURL && url.resolvingSymlinksInPath().path.hasPrefix(directory.resolvingSymlinksInPath().path + "/")
+    }
+
+    /// Old layouts still point at note.txt. The first edit writes a sibling RTF;
+    /// both addresses subsequently resolve to the same document.
+    public func noteURL(for url: URL) -> URL? {
+        guard url.isFileURL, ["note.txt", "note.rtf"].contains(url.lastPathComponent) else { return nil }
+        let folder = url.deletingLastPathComponent().resolvingSymlinksInPath()
+        guard UUID(uuidString: folder.lastPathComponent) != nil,
+              folder.deletingLastPathComponent().path == directory.resolvingSymlinksInPath().path,
+              owns(url) else { return nil }
+        let destination = folder.appendingPathComponent("note.rtf")
+        return owns(destination) ? destination : nil
+    }
+
+    public func contentURL(for url: URL) -> URL {
+        if let note = noteURL(for: url), FileManager.default.fileExists(atPath: note.path) { return note }
+        return url
+    }
+
+    public static func readText(at url: URL) throws -> NSAttributedString {
+        if url.pathExtension.lowercased() == "rtf" {
+            return try NSAttributedString(url: url, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+        }
+        return NSAttributedString(string: try String(contentsOf: url),
+                                  attributes: [.font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)])
+    }
+
+    public func saveNote(_ contents: NSAttributedString, at url: URL) throws {
+        guard let destination = noteURL(for: url) else { throw CocoaError(.fileWriteNoPermission) }
+        let data = try contents.data(from: NSRange(location: 0, length: contents.length),
+                                     documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+        try data.write(to: destination, options: .atomic)
     }
     /// Copy a selected HTML file, or a user-selected resource directory. The
     /// imported document never depends on the original path after this returns.
@@ -85,6 +131,10 @@ public struct PanelDocumentStorage: Sendable {
     }
     public func replace(_ content: String, at url: URL) throws {
         guard owns(url) else { throw CocoaError(.fileWriteNoPermission) }
+        if contentURL(for: url).pathExtension.lowercased() == "rtf" {
+            try saveNote(NSAttributedString(string: content, attributes: [.font: NSFont.systemFont(ofSize: 14)]), at: url)
+            return
+        }
         try content.write(to: url, atomically: true, encoding: .utf8)
     }
 }

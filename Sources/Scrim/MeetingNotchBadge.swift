@@ -33,8 +33,11 @@ extension Notification.Name {
         }
         updateBadge()
     }
+    static func isHidden(_ event: UpcomingEvent, occurrences: [String: Any]?, now: Date) -> Bool {
+        (occurrences?[event.id] as? Double ?? 0) > now.timeIntervalSince1970
+    }
     static func isHidden(_ event: UpcomingEvent) -> Bool {
-        (UserDefaults.standard.dictionary(forKey: hiddenKey)?[event.id] as? Double ?? 0) > Date().timeIntervalSince1970
+        isHidden(event, occurrences: UserDefaults.standard.dictionary(forKey: hiddenKey), now: Date())
     }
     static func toggleHidden(_ event: UpcomingEvent) {
         var hidden = UserDefaults.standard.dictionary(forKey: hiddenKey) as? [String: Double] ?? [:]
@@ -43,12 +46,12 @@ extension Notification.Name {
         UserDefaults.standard.set(hidden, forKey: hiddenKey)
         NotificationCenter.default.post(name: .meetingBadgeChanged, object: nil)
     }
-    static func candidate(_ events: [UpcomingEvent], now: Date, lead: Int, limit: Int, onlineOnly: Bool) -> UpcomingEvent? {
-        events.filter {
+    static func candidate(_ events: some Sequence<UpcomingEvent>, now: Date, lead: Int, limit: Int, onlineOnly: Bool) -> UpcomingEvent? {
+        events.lazy.filter {
             $0.attendance == .accepted && !$0.allDay && $0.end > now && $0.end > $0.start &&
             $0.start.timeIntervalSince(now) <= Double(lead) * 60 &&
             $0.end.timeIntervalSince($0.start) < Double(limit) * 3600 &&
-            (!onlineOnly || !$0.meetingLinks.isEmpty)
+            (!onlineOnly || $0.hasMeetingLink)
         }.min {
             let ongoing = $0.start <= now, otherOngoing = $1.start <= now
             if ongoing != otherOngoing { return ongoing }
@@ -63,7 +66,7 @@ extension Notification.Name {
             sources.removeAll(); panel.orderOut(nil); return
         }
         let panels = store.panelsAcrossPages(display: identity.key(for: number.uint32Value))
-        let urls = Set(panels.map(\.url).filter { WidgetSpec(url: $0)?.kind == .upcoming })
+        let urls = Set(panels.lazy.map(\.url).filter { WidgetSpec(url: $0)?.kind == .upcoming })
         sources = sources.filter { urls.contains($0.key) }
         let now = Date()
         for url in urls {
@@ -76,7 +79,8 @@ extension Notification.Name {
             }
         }
         if now.timeIntervalSince(lastFetch) >= 60 { lastFetch = now }
-        let events = sources.values.flatMap(\.events).filter { !Self.isHidden($0) }
+        let hidden = UserDefaults.standard.dictionary(forKey: Self.hiddenKey)
+        let events = sources.values.lazy.flatMap(\.events).filter { !Self.isHidden($0, occurrences: hidden, now: Date()) }
         guard let event = Self.candidate(events, now: now, lead: store.notchLeadMinutes, limit: store.notchLimitHours, onlineOnly: store.notchOnlineOnly) else { panel.orderOut(nil); return }
         let ongoing = event.start <= now
         let seconds = (ongoing ? event.end : event.start).timeIntervalSince(now)
@@ -131,7 +135,7 @@ private struct NotchWings: View, Equatable {
         if let meetingURL {
             let action = (MeetingLink.service(for: meetingURL) ?? "会議") + "に参加"
             Button {
-                if Date() < endsAt { NSWorkspace.shared.open(meetingURL) }
+                if Date() < endsAt { DefaultBrowser.open(meetingURL) }
             } label: { label }
             .buttonStyle(.plain)
             .help(action)

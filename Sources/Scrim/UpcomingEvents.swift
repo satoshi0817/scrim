@@ -34,6 +34,7 @@ struct UpcomingEvent: Identifiable {
     var meetingURL: URL? = nil
     var links: [EventLink] = []
     var notes: String? = nil
+    var hasMeetingLink: Bool { meetingURL != nil || links.contains { $0.meetingService != nil } }
     var meetingLinks: [EventLink] {
         var result = links.filter { $0.meetingService != nil }
         if let meetingURL, !result.contains(where: { $0.url == meetingURL }) { result.insert(EventLink(url: meetingURL), at: 0) }
@@ -62,15 +63,15 @@ struct AgendaDay: Identifiable {
 }
 
 enum AgendaPresentation {
-    static func currentEvent(_ events: [UpcomingEvent], now: Date) -> UpcomingEvent? {
-        events.filter { !$0.allDay && $0.end > now }.sorted {
+    static func currentEvent(_ events: some Sequence<UpcomingEvent>, now: Date) -> UpcomingEvent? {
+        events.lazy.filter { !$0.allDay && $0.end > now }.min {
             if ($0.start <= now) != ($1.start <= now) { return $0.start <= now }
             return $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start
-        }.first
+        }
     }
     static func nextAcceptedEvent(_ events: [UpcomingEvent], now: Date) -> UpcomingEvent? {
-        events.filter { !$0.allDay && $0.start > now && $0.attendance == .accepted }
-            .sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }.first
+        events.lazy.filter { !$0.allDay && $0.start > now && $0.attendance == .accepted }
+            .min { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
     }
     static func countdown(to date: Date, now: Date) -> String {
         let minutes = max(1, Int(ceil(date.timeIntervalSince(now) / 60)))
@@ -251,7 +252,7 @@ struct UpcomingEventsView: View {
                     Spacer(minLength: 0)
                     Text(model.selectedCalendarIDs?.isEmpty == true ? "表示するカレンダーを設定から選択してください" : "選択したカレンダーに\(model.displayDays)日間の予定はありません").font(.system(size: 15)).foregroundStyle(.secondary)
                 } else {
-                    let featuredID = AgendaPresentation.currentEvent(model.events.filter { !$0.meetingLinks.isEmpty }, now: now)?.id
+                    let featuredID = AgendaPresentation.currentEvent(model.events.lazy.filter(\.hasMeetingLink), now: now)?.id
                     if let event = AgendaPresentation.nextAcceptedEvent(model.events, now: now) {
                         nextEventSummary(event, showsJoin: event.id == featuredID)
                     }
@@ -639,7 +640,7 @@ private struct AgendaLinkButton: View {
         }
         .buttonStyle(.plain).modifier(HandCursor()).onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
-        .help(SlackLinks.desktopURL(link.url) == nil ? "外部ブラウザで開く：" + link.host : "Slackで開く")
+        .help("デフォルトブラウザで開く：" + link.host)
     }
 }
 

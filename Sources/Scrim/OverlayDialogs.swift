@@ -2,9 +2,23 @@ import SwiftUI
 import ScrimCore
 
 enum OverlayAction: Int, CaseIterable {
-    case edit, settings
-    var title: String { self == .edit ? "レイアウトを編集" : "設定を開く" }
-    var symbol: String { self == .edit ? "square.and.pencil" : "gearshape" }
+    case edit, settings, quit
+
+    var title: String {
+        switch self {
+        case .edit: return "レイアウトを編集"
+        case .settings: return "設定を開く"
+        case .quit: return "Scrim を終了"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .edit: return "square.and.pencil"
+        case .settings: return "gearshape"
+        case .quit: return "power"
+        }
+    }
 }
 
 final class ActionSelection: ObservableObject {

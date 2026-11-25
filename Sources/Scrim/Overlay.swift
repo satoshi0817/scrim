@@ -62,7 +62,7 @@ private extension NSView {
     }
 }
 
-final class PanelView: NSView, WKNavigationDelegate {
+final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
     let id: UUID
     var url: URL
     var web: WKWebView?
@@ -73,10 +73,10 @@ final class PanelView: NSView, WKNavigationDelegate {
     private var webDisplayMode: WebDisplayMode = .desktop
     private var weatherShowsHourly = true
     private let fileReadAccessRoot: URL?
+    private let notes: PanelNotes?
     private let weatherProvider: any WeatherProviding
-    private let fileError = FilePanelErrorView(frame: .zero)
+    private var fileError: FilePanelErrorView?
     private(set) var fileState: FilePanelState
-    private var snapshot: NSImage?
     private let image = NSImageView()
     private let dormant = label("休止中")
     private let dormantBadge = NSView()
@@ -89,7 +89,7 @@ final class PanelView: NSView, WKNavigationDelegate {
     private let menuButton: ActionButton
     var touched: (() -> Void)?
     var changed: (() -> Void)?
-    var openedExternalMeeting: (() -> Void)?
+    var didOpenWebLink: (() -> Void)?
     var command: ((Int) -> Void)?
     var canEditContent = false
     var navigated: ((URL) -> Void)?
@@ -103,13 +103,17 @@ final class PanelView: NSView, WKNavigationDelegate {
     private var epoch = 0
     private(set) var editing = false
     private var visibility = VisibilityPlan(state: .hidden)
-    init(record: PanelRecord, preview: Bool = false, websiteDataStore: WKWebsiteDataStore = .default(), fileReadAccessRoot: URL? = nil, weatherProvider: any WeatherProviding = WeatherService.shared) {
+    init(record: PanelRecord, preview: Bool = false, websiteDataStore: WKWebsiteDataStore = .default(), fileReadAccessRoot: URL? = nil, weatherProvider: any WeatherProviding = WeatherService.shared, notes: PanelNotes? = nil) {
+        self.notes = notes
         self.weatherProvider = weatherProvider
         self.fileReadAccessRoot = fileReadAccessRoot
         self.websiteDataStore = websiteDataStore
-        id = record.id; url = WebPanelPolicy.launchURL(record.url); fileState = FilePanelState(url: url); menuButton = ActionButton("", action: {})
+        id = record.id; url = WebPanelPolicy.launchURL(record.url); fileState = FilePanelState(url: notes?.files.contentURL(for: url) ?? url); menuButton = ActionButton("", action: {})
         super.init(frame: .zero)
         browser.onLastWindowClosed = { [weak self] in self?.didSleep?() }
+        browser.openWebLink = { [weak self] url in
+            DefaultBrowser.open(url) { self?.didOpenWebLink?() }
+        }
         wantsLayer = true; layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor; layer?.cornerRadius = 12; layer?.masksToBounds = true
         menuButton.actionBlock = { [weak self] in self?.showMenu() }; addSubview(menuButton)
         menuButton.image = NSImage(systemSymbolName: "line.3.horizontal.circle", accessibilityDescription: "パネルのメニュー")
@@ -131,7 +135,6 @@ final class PanelView: NSView, WKNavigationDelegate {
             previewPlaceholder = placeholder; content.addSubview(placeholder)
             previewContent = content; addSubview(content, positioned: .below, relativeTo: image)
         }
-        fileError.isHidden = true; addSubview(fileError)
         setDormantAppearance(false)
         applyVisibility(VisibilityPlan(state: .hidden))
         if fileState.source == .unreadable { showFileError(loadFailed: false) }
@@ -154,7 +157,7 @@ final class PanelView: NSView, WKNavigationDelegate {
             web.frame = NSRect(x: content.midX-width/2, y: content.minY, width: width, height: content.height)
         }
         document?.frame = content
-        fileError.frame = content
+        fileError?.frame = content
         let imageWidth = webDisplayMode == .mobile && ["http", "https"].contains(url.scheme ?? "") ? min(390, content.width) : content.width
         image.frame = NSRect(x: content.midX-imageWidth/2, y: content.minY, width: imageWidth, height: content.height)
         previewContent?.frame = content
@@ -173,6 +176,9 @@ final class PanelView: NSView, WKNavigationDelegate {
         menuButton.isHidden = !editing || !plan.showsPanelMenuButton
         browser.setVisible(plan.alpha > 0 && !plan.ignoresMouseEvents)
         widgetPanel?.setActive(plan.alpha > 0)
+        if plan.alpha == 0, let memo = document as? NativeNotePanel, window?.firstResponder === memo.editor {
+            window?.makeFirstResponder(nil)
+        }
         if plan.alpha == 0, WebPanelPolicy.isNotionCalendar(url) {
             calendarTodayPending = false
             web?.evaluateJavaScript(CalendarWebNavigation.cancel, completionHandler: nil)
@@ -192,8 +198,7 @@ final class PanelView: NSView, WKNavigationDelegate {
     }
     private static let mobileUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
     func prepareAgendaPresentation(resetScroll: Bool) {
-        guard WidgetSpec(url: url)?.kind == .upcoming else { return }
-        widgetPanel?.model.upcoming.beginPresentation(resetScroll: resetScroll)
+        widgetPanel?.model.upcoming?.beginPresentation(resetScroll: resetScroll)
     }
     func returnCalendarToToday() {
         guard WebPanelPolicy.isNotionCalendar(url) else { return }
@@ -206,6 +211,7 @@ final class PanelView: NSView, WKNavigationDelegate {
     func setEditing(_ value: Bool) {
         editing = value; moving = false; edges = 0
         widgetPanel?.setEditing(value)
+        (document as? NativeNotePanel)?.setLayoutEditing(value)
         layer?.borderWidth = value ? 3 : 0
         layer?.borderColor = ScrimPalette.nativeBlue.cgColor; needsDisplay = true
         window?.invalidateCursorRects(for: self)
@@ -229,21 +235,30 @@ final class PanelView: NSView, WKNavigationDelegate {
             return
         }
         guard web == nil, document == nil else { return }
-        fileState = FilePanelState(url: url); fileError.isHidden = true
+        fileState = FilePanelState(url: notes?.files.contentURL(for: url) ?? url); fileError?.isHidden = true
+        if let notes, notes.files.noteURL(for: url) != nil {
+            do {
+                let memo = NativeNotePanel(note: try notes.open(url), notes: notes, openWebLink: browser.openWebLink)
+                memo.setLayoutEditing(editing)
+                document = memo; addSubview(memo, positioned: .below, relativeTo: image)
+                setDormantAppearance(false); needsLayout = true
+            } catch { showFileError(loadFailed: fileState.source != .unreadable) }
+            return
+        }
         switch fileState.source {
         case .unreadable: showFileError(loadFailed: false); return
         case .pdf(let file):
             guard let pdf = PDFDocument(url: file), pdf.pageCount > 0 else { showFileError(); return }
-            let view = PDFView(); view.document = pdf; view.autoScales = true
+            let view = PDFView(); view.delegate = self; view.document = pdf; view.autoScales = true
             document = view; addSubview(view, positioned: .below, relativeTo: image)
             setDormantAppearance(false); needsLayout = true; return
         case .text(let file):
-            guard let text = try? String(contentsOf: file) else { showFileError(); return }
-            let scroll = NativeTextPanel(text: text)
+            guard let text = try? PanelDocumentStorage.readText(at: file) else { showFileError(); return }
+            let scroll = NativeTextPanel(content: text, openWebLink: browser.openWebLink)
             document = scroll; addSubview(scroll, positioned: .below, relativeTo: image)
             setDormantAppearance(false); needsLayout = true; return
         case .widget(let spec):
-            let widget = NativeWidgetPanel(spec: spec, provider: weatherProvider)
+            let widget = NativeWidgetPanel(spec: spec, provider: weatherProvider, openWebLink: browser.openWebLink)
             if let zones = UserDefaults.standard.stringArray(forKey: digitalZonesKey), !zones.isEmpty {
                 widget.model.digitalZones = zones
             }
@@ -253,15 +268,13 @@ final class PanelView: NSView, WKNavigationDelegate {
                 self.fileState = FilePanelState(url: self.url)
                 self.navigated?(self.url)
             }
-            widget.model.upcoming.onOpenMeeting = { [weak self] url in
-                if SlackLinks.open(url) { self?.openedExternalMeeting?() }
-            }
-            widget.model.upcoming.onOpenLink = widget.model.upcoming.onOpenMeeting
-            widget.model.upcoming.onConfigurationChange = { [weak self, weak widget] in
-                guard let self, let model = widget?.model.upcoming else { return }
-                self.url = WidgetSpec(kind: .upcoming, calendarIDs: model.selectedCalendarIDs, agendaDays: model.displayDays, excludedKeywords: model.excludedKeywords).url
-                self.fileState = FilePanelState(url: self.url)
-                self.navigated?(self.url)
+            if let agenda = widget.model.upcoming {
+                agenda.onConfigurationChange = { [weak self, weak agenda] in
+                    guard let self, let agenda else { return }
+                    self.url = WidgetSpec(kind: .upcoming, calendarIDs: agenda.selectedCalendarIDs, agendaDays: agenda.displayDays, excludedKeywords: agenda.excludedKeywords).url
+                    self.fileState = FilePanelState(url: self.url)
+                    self.navigated?(self.url)
+                }
             }
             widgetPanel = widget; document = widget
             widget.model.setShowsHourly(weatherShowsHourly)
@@ -273,18 +286,10 @@ final class PanelView: NSView, WKNavigationDelegate {
         }
         epoch += 1; sleeping = false; setDormantAppearance(false)
         spinner.startAnimation(nil)
-        let configuration = WKWebViewConfiguration()
-        let scrollStyle = WKUserScript(source: """
-            (() => {
-                const style = document.createElement('style');
-                style.textContent = 'html, * { scrollbar-width: thin; }';
-                (document.head || document.documentElement).appendChild(style);
-            })();
-            """, injectionTime: .atDocumentEnd, forMainFrameOnly: false, in: .defaultClient)
-        configuration.userContentController.addUserScript(scrollStyle)
-        configuration.websiteDataStore = websiteDataStore
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        let configuration = BrowserWindows.panelConfiguration(dataStore: websiteDataStore)
         let view = PanelWebView(frame: .zero, configuration: configuration)
+        // A live WebView takes a fresh snapshot the next time it sleeps.
+        image.image = nil
         if webDisplayMode == .mobile && !url.isFileURL { view.customUserAgent = Self.mobileUserAgent }
         web = view; view.navigationDelegate = self; view.uiDelegate = browser
         view.allowsBackForwardNavigationGestures = true
@@ -295,12 +300,27 @@ final class PanelView: NSView, WKNavigationDelegate {
     }
     private func showFileError(loadFailed: Bool = true) {
         if loadFailed { fileState.loadFailed() }
-        fileError.apply(fileState); web?.stopLoading(); web?.navigationDelegate = nil
+        let errorView = fileError ?? FilePanelErrorView(frame: bounds)
+        if fileError == nil { addSubview(errorView); fileError = errorView }
+        errorView.apply(fileState); web?.stopLoading(); web?.navigationDelegate = nil
         web?.removeFromSuperview(); web = nil; document?.removeFromSuperview(); document = nil
-        spinner.stopAnimation(nil); setDormantAppearance(false); fileError.isHidden = false; needsLayout = true
+        spinner.stopAnimation(nil); setDormantAppearance(false); errorView.isHidden = false; needsLayout = true
     }
     func reloadContent() {
         if let widgetPanel { widgetPanel.reload(); return }
+        if let memo = document as? NativeNotePanel, let notes {
+            guard notes.save(memo.note) else { return }
+            let source = notes.files.contentURL(for: url)
+            do {
+                let body = try PanelDocumentStorage.readText(at: source)
+                memo.note.content.performEditingTransaction { memo.note.text.setAttributedString(body) }
+                memo.note.undo.removeAllActions()
+            } catch {
+                fileState = FilePanelState(url: source)
+                showFileError(loadFailed: fileState.source != .unreadable)
+            }
+            return
+        }
         browser.closeAll()
         web?.stopLoading(); web?.navigationDelegate = nil; web?.removeFromSuperview(); web = nil
         document?.removeFromSuperview(); document = nil; wake()
@@ -310,11 +330,12 @@ final class PanelView: NSView, WKNavigationDelegate {
         guard !browser.hasOpenWindows else { return }
         if fileState.source == .unreadable { return }
         if let document {
+            if let memo = document as? NativeNotePanel, notes?.save(memo.note) == false { return }
             widgetPanel?.setActive(false); widgetPanel = nil
             if let bitmap = document.bitmapImageRepForCachingDisplay(in: document.bounds) {
                 document.cacheDisplay(in: document.bounds, to: bitmap)
                 let picture = NSImage(size: document.bounds.size); picture.addRepresentation(bitmap)
-                snapshot = picture; image.image = picture
+                image.image = picture
             }
             document.removeFromSuperview(); self.document = nil
             setDormantAppearance(true); return
@@ -324,7 +345,7 @@ final class PanelView: NSView, WKNavigationDelegate {
         sleeping = true; epoch += 1; let token = epoch
         view.takeSnapshot(with: nil) { [weak self, weak view] picture, _ in
             guard let self, self.epoch == token, self.sleeping else { return }
-            self.snapshot = picture; self.image.image = picture; self.setDormantAppearance(true)
+            self.image.image = picture; self.setDormantAppearance(true)
             view?.stopLoading(); view?.navigationDelegate = nil; view?.removeFromSuperview(); self.web = nil
             self.spinner.stopAnimation(nil)
             self.didSleep?()
@@ -335,15 +356,19 @@ final class PanelView: NSView, WKNavigationDelegate {
         if let content = previewContent, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
             content.cacheDisplay(in: content.bounds, to: bitmap)
             let picture = NSImage(size: content.bounds.size); picture.addRepresentation(bitmap)
-            snapshot = picture; image.image = picture; content.isHidden = true
+            image.image = picture; content.isHidden = true
         }
         setDormantAppearance(true)
     }
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if action.navigationType == .linkActivated, let url = action.request.url, SlackLinks.desktopURL(url) != nil, SlackLinks.open(url) {
-            decisionHandler(.cancel)
-            openedExternalMeeting?()
-        } else { decisionHandler(.allow) }
+        decisionHandler(browser.openActivatedLink(action, in: webView) ? .cancel : .allow)
+    }
+    func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
+        openExternally(url)
+    }
+    func openExternally(_ url: URL) {
+        if DefaultBrowser.supports(url) { browser.openWebLink(url) }
+        else { NSWorkspace.shared.open(url) }
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         spinner.stopAnimation(nil)
@@ -412,13 +437,19 @@ final class PanelView: NSView, WKNavigationDelegate {
             menu.addItem(item)
             menu.addItem(.separator())
         }
-        for (index, text) in ["更新", "既定のアプリで開く", "複製", "パネルを削除"].enumerated() {
+        let openTitle = DefaultBrowser.supports(url) ? "デフォルトブラウザで開く" : "既定のアプリで開く"
+        for (index, text) in ["更新", openTitle, "複製", "パネルを削除"].enumerated() {
             if index == 1 && WidgetSpec(url: url) != nil { continue }
             let item = NSMenuItem(title: text, action: #selector(menuAction(_:)), keyEquivalent: ""); item.tag = index; item.target = self; menu.addItem(item)
         }
         if canEditContent {
-            let edit = NSMenuItem(title: "内容を編集…", action: #selector(menuAction(_:)), keyEquivalent: "")
+            let title = notes?.files.noteURL(for: url) != nil ? "メモを編集" : "内容を編集…"
+            let edit = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
             edit.tag = 4; edit.target = self; menu.insertItem(edit, at: 1)
+        }
+        if !canEditContent, case .text = fileState.source {
+            let copy = NSMenuItem(title: "メモとして複製", action: #selector(menuAction(_:)), keyEquivalent: "")
+            copy.tag = 26; copy.target = self; menu.insertItem(copy, at: 1)
         }
         menu.popUp(positioning: nil, at: NSPoint(x: bounds.width-40, y: bounds.height-32), in: self)
     }
@@ -440,7 +471,7 @@ final class PanelView: NSView, WKNavigationDelegate {
         switch tag {
         case 20: widgetPanel?.model.clockStyle = .analog
         case 21: widgetPanel?.model.clockStyle = .digital
-        case 22: widgetPanel?.model.upcoming.isConfiguring = true
+        case 22: widgetPanel?.model.upcoming?.isConfiguring = true
         case 24: widgetPanel?.model.configuringWorldClock = true
         case 23: returnCalendarToToday()
         default: command?(tag)
@@ -499,12 +530,18 @@ final class PanelView: NSView, WKNavigationDelegate {
         edges = 0
     }
     deinit { browser.closeAll() }
+
+    func focusNote() {
+        wake()
+        if let memo = document as? NativeNotePanel { window?.makeFirstResponder(memo.editor) }
+    }
 }
 
 final class OverlayController {
     let store: SettingsStore
     private let websiteDataStore: WKWebsiteDataStore
     let documentStorage: PanelDocumentStorage
+    let notes: PanelNotes
     private let weatherProvider: any WeatherProviding
     var pool = PanelPool()
     var records: [PanelRecord]
@@ -571,7 +608,11 @@ final class OverlayController {
     }
     private func performAction(_ action: OverlayAction) {
         closeDialog()
-        if action == .edit { setEditing(!editing) } else { onOpenSettings?() }
+        switch action {
+        case .edit: setEditing(!editing)
+        case .settings: onOpenSettings?()
+        case .quit: NSApp.terminate(nil)
+        }
     }
     var onOpenSettings: (() -> Void)?
     var isSettingsKey: (() -> Bool)?
@@ -615,6 +656,7 @@ final class OverlayController {
     init(store: SettingsStore, websiteDataStore: WKWebsiteDataStore = .default(), documentStorage: PanelDocumentStorage = PanelDocumentStorage(), weatherProvider: any WeatherProviding = WeatherService.shared) {
         self.weatherProvider = weatherProvider
         self.documentStorage = documentStorage
+        notes = PanelNotes(files: documentStorage)
         self.websiteDataStore = websiteDataStore
         self.store = store; records = Array(store.panels.prefix(PanelPool.maximum)).map { record in
             var clean = record; clean.url = WebPanelPolicy.launchURL(record.url); return clean
@@ -655,6 +697,7 @@ final class OverlayController {
             if event.type == .scrollWheel, self.pagesScroll(event) { return nil }
             if self.state == .peek && self.store.peekAllowsInteraction { return PanelPointerEvents.withoutCommand(event) }
             guard self.state == .pinned else { return event }
+            if event.type == .keyDown, let editor = self.panel.firstResponder as? NoteTextView, editor.hasMarkedText() { return event }
             if self.embeddedSettings?.recordingAnyKeys == true { return event }
             if event.type == .keyDown && event.charactersIgnoringModifiers == "," &&
                 event.modifierFlags.intersection([.command, .shift, .control, .option]) == .command {
@@ -662,7 +705,7 @@ final class OverlayController {
                     if self.dialog != nil { self.closeDialog() }
                     else {
                         self.actionSelection.selected = .edit
-                        self.presentDialog(OverlayActionList(selection: self.actionSelection, editing: self.editing) { [weak self] in self?.performAction($0) }, size: NSSize(width: 360, height: 164))
+                        self.presentDialog(OverlayActionList(selection: self.actionSelection, editing: self.editing) { [weak self] in self?.performAction($0) }, size: NSSize(width: 360, height: 206))
                     }
                 }
                 return nil
@@ -683,7 +726,8 @@ final class OverlayController {
             if event.type == .keyDown, self.store.pageCount > 1, [123, 124].contains(event.keyCode),
                self.panel.attachedSheet == nil {
                 let flags = event.modifierFlags.intersection([.command, .shift, .control, .option])
-                if flags == NSEvent.ModifierFlags(rawValue: self.store.pageArrowModifiers) {
+                if flags == NSEvent.ModifierFlags(rawValue: self.store.pageArrowModifiers) &&
+                    !(flags.isEmpty && self.panel.firstResponder is NoteTextView) {
                     if !event.isARepeat { self.selectPage(self.store.currentPage + (event.keyCode == 124 ? 1 : -1)) }
                     return nil
                 }
@@ -718,6 +762,7 @@ final class OverlayController {
         for view in views.values { view.applyVisibility(plan) }
         layoutChrome()
         if next == .hidden {
+            notes.saveAll()
             if immediately {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0; self.panel.animator().alphaValue = 0
@@ -1043,17 +1088,19 @@ final class OverlayController {
     }
 
     private func install(_ record: PanelRecord) {
-        let view = PanelView(record: record, websiteDataStore: websiteDataStore, fileReadAccessRoot: documentStorage.resourceRoot(for: record.url), weatherProvider: weatherProvider); views[record.id] = view; root.addSubview(view)
+        let view = PanelView(record: record, websiteDataStore: websiteDataStore, fileReadAccessRoot: documentStorage.resourceRoot(for: record.url), weatherProvider: weatherProvider, notes: notes); views[record.id] = view; root.addSubview(view)
         view.browser.hideFromScreenCapture = store.hideFromScreenCapture
         view.setWeatherShowsHourly(store.weatherShowsHourly)
         view.setWebDisplayMode(record.webDisplayMode ?? store.webDisplayMode)
         view.applyVisibility(VisibilityPlan(state: state, peekAllowsInteraction: store.peekAllowsInteraction))
         view.setEditing(editing)
-        view.canEditContent = documentStorage.owns(record.url)
+        if case .html = view.fileState.source {
+            view.canEditContent = documentStorage.owns(record.url)
+        } else { view.canEditContent = documentStorage.noteURL(for: record.url) != nil }
         view.frame = record.placement.restore(screen: root.bounds.size)
         view.touched = { [weak self] in self?.touch(record.id) }
         view.changed = { [weak self] in self?.placementPreview = nil; self?.saveFrames() }
-        view.openedExternalMeeting = { [weak self] in self?.onDismiss?() }
+        view.didOpenWebLink = { [weak self] in self?.onDismiss?() }
         view.didSleep = { [weak self] in self?.reconcile() }
         view.navigated = { [weak self] url in
             guard let self, let index = self.records.firstIndex(where: { $0.id == record.id }) else { return }
@@ -1064,7 +1111,7 @@ final class OverlayController {
             guard let self, self.editing, let view = self.views[record.id] else { return }
             switch command {
             case 0: self.touch(record.id); view.reloadContent()
-            case 1: SlackLinks.open(view.web?.url ?? view.url)
+            case 1: view.openExternally(view.web?.url ?? self.documentStorage.contentURL(for: view.url))
             case 2:
                 let mode = self.records.first(where: { $0.id == record.id })?.webDisplayMode ?? self.store.webDisplayMode
                 self.add(view.web?.url ?? view.url, mode: mode)
@@ -1078,7 +1125,13 @@ final class OverlayController {
                 }, cancel: { [weak self] in self?.closeDialog() }), size: NSSize(width: 440, height: 205))
             case 4:
                 guard self.documentStorage.owns(view.url) else { return }
-                self.documentPrompt(kind: view.url.pathExtension == "html" ? .html : .text, existing: view)
+                if self.documentStorage.noteURL(for: view.url) != nil {
+                    self.editNote(view)
+                } else if case .html = view.fileState.source { self.htmlPrompt(existing: view) }
+            case 26:
+                guard case .text(let file) = view.fileState.source else { return }
+                do { self.addNote(try PanelDocumentStorage.readText(at: file)) }
+                catch { NSAlert(error: error).beginSheetModal(for: self.panel) }
             default: view.removeFromSuperview(); self.views.removeValue(forKey: record.id); PanelActions.close(record.id, records: &self.records, pool: &self.pool); self.persist(); self.layoutChrome()
             }
         }
@@ -1184,8 +1237,8 @@ final class OverlayController {
     private func addSource(_ tag: Int, at target: CGRect? = nil) {
         guard editing else { return }
         switch tag {
-        case 1: documentPrompt(kind: .text, at: target)
-        case 2: documentPrompt(kind: .html, at: target)
+        case 1: addNote(at: target)
+        case 2: htmlPrompt(at: target)
         case 5: addNotionViewPrompt(at: target)
         case 4: importHTMLPrompt(at: target)
         case 10: add(WidgetSpec(kind: .weather).url, at: target)
@@ -1196,7 +1249,7 @@ final class OverlayController {
         case 13: add(WidgetSpec(kind: .upcoming).url, at: target)
         case 3:
             let picker = NSOpenPanel(); picker.canChooseDirectories = false; picker.allowsMultipleSelection = true
-            picker.allowedContentTypes = [.pdf, .html, .plainText, UTType(filenameExtension: "md") ?? .plainText,
+            picker.allowedContentTypes = [.pdf, .html, .plainText, .rtf, UTType(filenameExtension: "md") ?? .plainText,
                                           UTType(filenameExtension: "log") ?? .plainText, UTType(filenameExtension: "xhtml") ?? .html]
             picker.beginSheetModal(for: panel) { [weak self] response in
                 if response == .OK { for (i, url) in picker.urls.enumerated() { self?.add(url, at: i == 0 ? target : nil) } }
@@ -1266,12 +1319,27 @@ final class OverlayController {
             catch { NSAlert(error: error).beginSheetModal(for: self.panel, completionHandler: nil) }
         }
     }
-    private func documentPrompt(kind: PanelDocumentStorage.Kind, existing: PanelView? = nil, at target: CGRect? = nil) {
+    private func editNote(_ view: PanelView) {
+        setEditing(false)
+        touch(view.id)
+        panel.makeKey()
+        view.focusNote()
+    }
+
+    func addNote(_ contents: NSAttributedString = NSAttributedString(string: ""), at target: CGRect? = nil) {
+        guard editing, records.count < PanelPool.maximum else { return }
+        do {
+            let url = try documentStorage.createNote(contents)
+            add(url, at: target)
+            if let id = records.last?.id, let view = views[id] { editNote(view) }
+        } catch { NSAlert(error: error).beginSheetModal(for: panel) }
+    }
+
+    private func htmlPrompt(existing: PanelView? = nil, at target: CGRect? = nil) {
         guard editing else { return }
         let alert = NSAlert()
-        let name = kind == .html ? "HTML" : "テキスト"
-        alert.messageText = existing == nil ? "\(name) パネルを追加" : "\(name) を編集"
-        alert.informativeText = kind == .html ? "HTML を入力するか、貼り付けてください。" : "テキストを入力するか、貼り付けてください。"
+        alert.messageText = existing == nil ? "HTML パネルを追加" : "HTML を編集"
+        alert.informativeText = "HTML を入力するか、貼り付けてください。"
         alert.addButton(withTitle: existing == nil ? "追加" : "保存"); alert.addButton(withTitle: "キャンセル")
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 280)); scroll.hasVerticalScroller = true
         let editor = NSTextView(frame: scroll.bounds); editor.isRichText = false
@@ -1288,7 +1356,7 @@ final class OverlayController {
                     try self.documentStorage.replace(editor.string, at: existing.url); existing.reloadContent()
                 } else {
                     guard self.records.count < PanelPool.maximum else { NSSound.beep(); return }
-                    let url = try self.documentStorage.create(editor.string, kind: kind); self.add(url, at: target)
+                    let url = try self.documentStorage.create(editor.string, kind: .html); self.add(url, at: target)
                 }
             } catch { NSAlert(error: error).beginSheetModal(for: self.panel) }
         }

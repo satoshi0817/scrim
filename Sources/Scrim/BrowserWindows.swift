@@ -10,8 +10,40 @@ final class BrowserWindows: NSObject, WKUIDelegate, NSWindowDelegate, WKNavigati
         didSet { for window in windows.values { window.sharingType = hideFromScreenCapture ? .none : .readOnly } }
     }
     var onLastWindowClosed: (() -> Void)?
+    var openWebLink: (URL) -> Void = { DefaultBrowser.open($0) }
     var hasOpenWindows: Bool { !windows.isEmpty }
     var popupWebViews: [WKWebView] { windows.values.compactMap { $0.contentView as? WKWebView } }
+
+    private static let scrollStyle = WKUserScript(source: """
+        (() => {
+            const style = document.createElement('style');
+            style.textContent = 'html, * { scrollbar-width: thin; }';
+            (document.head || document.documentElement).appendChild(style);
+        })();
+        """, injectionTime: .atDocumentEnd, forMainFrameOnly: false, in: .defaultClient)
+
+    // Let WebKit follow a clicked href even when a site's router handles clicks itself.
+    // The navigation delegate then receives the same link activation as on a plain HTML page.
+    private static let panelLinkClicks = WKUserScript(source: """
+        window.addEventListener('click', event => {
+            if (!event.isTrusted || event.defaultPrevented || event.button !== 0) return;
+            const link = event.composedPath().find(node => node instanceof Element &&
+                node.matches('a[href], area[href], button, input, select, textarea, [contenteditable="true"]'));
+            if (!(link instanceof HTMLAnchorElement || link instanceof HTMLAreaElement) ||
+                link.hasAttribute('download') || !['http:', 'https:'].includes(link.protocol)) return;
+            if (link.href.split('#', 1)[0] === location.href.split('#', 1)[0]) return;
+            event.stopImmediatePropagation();
+        }, true);
+        """, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .defaultClient)
+
+    static func panelConfiguration(dataStore: WKWebsiteDataStore) -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = dataStore
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        configuration.userContentController.addUserScript(scrollStyle)
+        configuration.userContentController.addUserScript(panelLinkClicks)
+        return configuration
+    }
 
     func setVisible(_ value: Bool) {
         visible = value
@@ -20,9 +52,25 @@ final class BrowserWindows: NSObject, WKUIDelegate, NSWindowDelegate, WKNavigati
         }
     }
 
+    func openActivatedLink(_ action: WKNavigationAction, in webView: WKWebView) -> Bool {
+        guard action.navigationType == .linkActivated, !action.shouldPerformDownload,
+              let url = action.request.url, DefaultBrowser.supports(url) else { return false }
+        if url.fragment != nil, let frame = action.targetFrame,
+           let current = frame.isMainFrame ? webView.url : frame.request.url,
+           url.absoluteString.prefix(while: { $0 != "#" }) == current.absoluteString.prefix(while: { $0 != "#" }) {
+            return false
+        }
+        openWebLink(url)
+        return true
+    }
+
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        guard navigationAction.targetFrame == nil else { return nil }
+        guard navigationAction.targetFrame == nil, !openActivatedLink(navigationAction, in: webView) else { return nil }
+        // A login window must be able to handle its own links throughout sign-in.
+        let content = WKUserContentController()
+        content.addUserScript(Self.scrollStyle)
+        configuration.userContentController = content
         let popup = WKWebView(frame: .zero, configuration: configuration)
         popup.uiDelegate = self; popup.navigationDelegate = self
         popup.allowsBackForwardNavigationGestures = true
