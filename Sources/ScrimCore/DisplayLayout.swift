@@ -12,21 +12,54 @@ struct LayoutSize: Codable {
 
 public enum DisplayLayoutCopy {
     public static let checkboxTitle = "すべてのディスプレイで同じ配置"
+    public static let sharedFooter = "すべての画面で同じパネルを、画面に対する比率を保って表示します。"
+    public static let perDisplayFooter = "パネルの追加・削除やURLはすべての画面で共通です。位置・サイズ・重なり順だけを画面ごとに記憶します。"
+    public static let switchFooter = "切り替えると直前の配置を引き継ぎます。オンに戻すと、最後にパネルを追加・削除・移動した画面の配置が共通になります。"
+    public static let visibilityHeader = "表示するディスプレイ"
+    public static let visibilityFooter = "オフにした画面にポインタがあるときは、ジェスチャーやショートカットで呼び出しても開きません。メニューバーから開く操作は、オンの画面に表示します。"
 }
 
+/// In per-display mode, a saved layout supplies only order and geometry; content comes from the shared panels.
 public struct DisplayLayout: Codable {
     public var panels: [PanelRecord]
     private var referenceCanvas: LayoutSize
+    /// Last time this display's panel set or geometry changed; picks the arrangement kept when sharing again.
+    public var editedAt: Date?
     private enum CodingKeys: String, CodingKey {
         case panels
         case referenceCanvas = "referenceSize"
+        case editedAt
     }
     public var referenceSize: CGSize {
         get { referenceCanvas.size }
         set { referenceCanvas = LayoutSize(newValue) }
     }
-    public init(panels: [PanelRecord], referenceSize: CGSize) {
-        self.panels = panels; self.referenceCanvas = LayoutSize(referenceSize)
+    public init(panels: [PanelRecord], referenceSize: CGSize, editedAt: Date? = nil) {
+        self.panels = panels; self.referenceCanvas = LayoutSize(referenceSize); self.editedAt = editedAt
+    }
+    /// Shared content in this arrangement's order and geometry. Panels it has not seen yet
+    /// follow in shared order, at their shared fractions of this arrangement's screen.
+    public static func merging(content: [PanelRecord], arrangement: DisplayLayout) -> DisplayLayout {
+        let shared = Dictionary(content.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var seen = Set<UUID>()
+        var panels = arrangement.panels.compactMap { arranged -> PanelRecord? in
+            guard var record = shared[arranged.id], seen.insert(arranged.id).inserted else { return nil }
+            record.placement = arranged.placement; return record
+        }
+        panels += content.filter { !seen.contains($0.id) }
+        return DisplayLayout(panels: panels, referenceSize: arrangement.referenceSize, editedAt: arrangement.editedAt)
+    }
+    /// True when the same panels sit at the same fractions. Stacking order is ignored, because
+    /// clicking a panel brings it forward without the user rearranging anything.
+    /// Placements round-trip through view frames, so compare them with a small tolerance.
+    func hasSameArrangement(as other: DisplayLayout) -> Bool {
+        let theirs = Dictionary(other.panels.map { ($0.id, $0.placement) }, uniquingKeysWith: { first, _ in first })
+        guard panels.count == other.panels.count, Set(panels.map(\.id)) == Set(theirs.keys) else { return false }
+        return panels.allSatisfy { panel in
+            guard let q = theirs[panel.id] else { return false }
+            let p = panel.placement
+            return [p.x - q.x, p.y - q.y, p.width - q.width, p.height - q.height].allSatisfy { abs($0) < 1e-6 }
+        }
     }
 }
 public protocol DisplayUUIDProviding {
@@ -55,16 +88,57 @@ public final class DisplayIdentity {
 }
 public extension SettingsStore {
     /// Adopt the first presentation screen for legacy fractions without rewriting them.
-    func layout(for display: String, screen: CGSize, current: DisplayLayout? = nil) -> DisplayLayout {
+    /// `transient` is an in-memory arrangement for a display without a stable UUID.
+    func layout(for display: String, screen: CGSize, transient: DisplayLayout? = nil) -> DisplayLayout {
         if sharedLayoutReferenceSize == nil { sharedLayoutReferenceSize = screen }
-        let shared = DisplayLayout(panels: panels, referenceSize: sharedLayoutReferenceSize ?? screen)
-        if sameLayoutOnAllDisplays { return shared }
-        if let saved = layoutsByDisplay[display] { return saved }
-        let copy = current ?? shared
-        if !display.hasPrefix("ephemeral:") {
-            var layouts = layoutsByDisplay; layouts[display] = copy; layoutsByDisplay = layouts
+        if sameLayoutOnAllDisplays { return DisplayLayout(panels: panels, referenceSize: sharedLayoutReferenceSize ?? screen) }
+        // A display without its own arrangement starts from the shared one, as it looked on this screen.
+        guard let arrangement = transient ?? layoutsByDisplay[display] else { return DisplayLayout(panels: panels, referenceSize: screen) }
+        return DisplayLayout.merging(content: panels, arrangement: arrangement)
+    }
+    func showsOverlay(on display: String) -> Bool { !disabledDisplays.contains(display) }
+    func setShowsOverlay(_ shows: Bool, on display: String) {
+        guard !display.hasPrefix("ephemeral:") else { return }
+        var disabled = disabledDisplays
+        if shows { disabled.remove(display) } else { disabled.insert(display) }
+        disabledDisplays = disabled
+    }
+    /// Switching carries over what was shown last. Turning per-display layouts on starts every
+    /// display from the shared layout; turning them off adopts the most recently edited display's.
+    func setSameLayoutOnAllDisplays(_ value: Bool) {
+        guard value != sameLayoutOnAllDisplays else { return }
+        for page in 0..<pageCount {
+            let layoutsKey = pageKey("layoutsByDisplay", page: page)
+            if value {
+                let layouts: [String: DisplayLayout] = read(layoutsKey, fallback: [:])
+                let edited = layouts.values.compactMap { layout in layout.editedAt.map { (layout, $0) } }
+                if let latest = edited.max(by: { $0.1 < $1.1 })?.0 {
+                    let content: [PanelRecord] = read(pageKey("panels", page: page), fallback: [])
+                    let adopted = DisplayLayout.merging(content: content, arrangement: latest)
+                    write(adopted.panels, pageKey("panels", page: page))
+                    write(LayoutSize(adopted.referenceSize), pageKey("sharedLayoutReferenceSize", page: page))
+                }
+            }
+            write([String: DisplayLayout](), layoutsKey)
         }
-        return copy
+        sameLayoutOnAllDisplays = value
+    }
+    /// Before per-display layouts shared their content, each display kept its own panel list.
+    /// Keep every panel any display still had by adding it to the shared list once.
+    func shareLegacyDisplayContent() {
+        guard !read("displayContentShared", fallback: false) else { return }
+        if !sameLayoutOnAllDisplays {
+            for page in 0..<pageCount {
+                let layouts: [String: DisplayLayout] = read(pageKey("layoutsByDisplay", page: page), fallback: [:])
+                var content: [PanelRecord] = read(pageKey("panels", page: page), fallback: [])
+                var known = Set(content.map(\.id))
+                for key in layouts.keys.sorted() {
+                    for panel in layouts[key]?.panels ?? [] where known.insert(panel.id).inserted { content.append(panel) }
+                }
+                write(Array(content.prefix(PanelPool.maximum)), pageKey("panels", page: page))
+            }
+        }
+        write(true, "displayContentShared")
     }
     /// Fitted shared presentations save order and metadata, never computed geometry.
     func savePresentedLayout(_ shown: DisplayLayout, for display: String, wasFitted: Bool) {
@@ -82,12 +156,32 @@ public extension SettingsStore {
             return copy
         }
     }
+    /// Per-display saves write content to the shared panels and order/geometry to this display only.
     func saveLayout(_ layout: DisplayLayout, for display: String) {
         if sameLayoutOnAllDisplays {
-            panels = layout.panels; sharedLayoutReferenceSize = layout.referenceSize
-        } else if !display.hasPrefix("ephemeral:") {
-            var layouts = layoutsByDisplay; layouts[display] = layout; layoutsByDisplay = layouts
+            panels = layout.panels; sharedLayoutReferenceSize = layout.referenceSize; return
         }
+        let previousContent = panels
+        let shown = Dictionary(layout.panels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Shared geometry stays as it was; panels new to the shared list keep this display's fractions.
+        var content = previousContent.compactMap { old -> PanelRecord? in
+            guard var record = shown[old.id] else { return nil }
+            record.placement = old.placement; return record
+        }
+        let known = Set(previousContent.map(\.id))
+        content += layout.panels.filter { !known.contains($0.id) }
+        panels = content
+        var layouts = layoutsByDisplay
+        if !display.hasPrefix("ephemeral:") {
+            let baseline = layouts[display] ?? DisplayLayout(panels: previousContent, referenceSize: layout.referenceSize)
+            var arrangement = layout
+            arrangement.editedAt = baseline.hasSameArrangement(as: layout) ? baseline.editedAt : Date()
+            layouts[display] = arrangement
+        }
+        // Removing a panel on one display removes it everywhere.
+        let ids = Set(content.map(\.id))
+        for key in layouts.keys { layouts[key]?.panels.removeAll { !ids.contains($0.id) } }
+        layoutsByDisplay = layouts
     }
 }
 public enum LayoutFitter {

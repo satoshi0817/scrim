@@ -1,6 +1,6 @@
 import Foundation
 
-public enum WidgetKind: String, CaseIterable, Codable { case weather, clock, calendar, upcoming, worldclock, calculator }
+public enum WidgetKind: String, CaseIterable, Codable { case weather, clock, calendar, upcoming, worldclock, calculator, notionTasks = "notion-tasks" }
 public enum ClockStyle: String, CaseIterable { case analog, digital }
 public struct WidgetSpec: Equatable {
     public let kind: WidgetKind
@@ -9,16 +9,25 @@ public struct WidgetSpec: Equatable {
     public let calendarIDs: Set<String>?
     public let agendaDays: Int
     public let excludedKeywords: [String]
-    public init(kind: WidgetKind, clockStyle: ClockStyle = .analog, calendarIDs: Set<String>? = nil, agendaDays: Int = 7, excludedKeywords: [String] = []) {
+    /// nil until a Notion task panel has a data source and column mapping.
+    public let notionTasks: NotionTaskMapping?
+    /// Saved list filters of a Notion task panel.
+    public let notionFilter: NotionTaskFilter
+    public init(kind: WidgetKind, clockStyle: ClockStyle = .analog, calendarIDs: Set<String>? = nil, agendaDays: Int = 7, excludedKeywords: [String] = [],
+                notionTasks: NotionTaskMapping? = nil, notionFilter: NotionTaskFilter = NotionTaskFilter()) {
         self.kind = kind; self.clockStyle = kind == .clock ? clockStyle : .analog
         self.calendarIDs = kind == .upcoming ? calendarIDs : nil
         self.agendaDays = kind == .upcoming ? min(31, max(1, agendaDays)) : 7
         self.excludedKeywords = kind == .upcoming ? EventExclusion.normalized(excludedKeywords) : []
+        self.notionTasks = kind == .notionTasks ? notionTasks : nil
+        self.notionFilter = kind == .notionTasks ? notionFilter : NotionTaskFilter()
     }
     public init?(url: URL) {
         guard url.scheme == "scrim-widget", let host = url.host, let kind = WidgetKind(rawValue: host) else { return nil }
         self.kind = kind
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        notionTasks = kind == .notionTasks ? NotionTaskMapping(queryItems: items) : nil
+        notionFilter = kind == .notionTasks ? NotionTaskFilter(queryItems: items) : NotionTaskFilter()
         clockStyle = kind == .clock ? items.first(where: { $0.name == "style" })?.value.flatMap(ClockStyle.init(rawValue:)) ?? .analog : .analog
         agendaDays = kind == .upcoming ? min(31, max(1, items.first(where: { $0.name == "days" })?.value.flatMap(Int.init) ?? 7)) : 7
         excludedKeywords = kind == .upcoming ? EventExclusion.normalized(items.filter { $0.name == "exclude" }.compactMap(\.value)) : []
@@ -35,11 +44,15 @@ public struct WidgetSpec: Equatable {
         }
         if kind == .upcoming && agendaDays != 7 { items.append(URLQueryItem(name: "days", value: String(agendaDays))) }
         if kind == .upcoming { items += excludedKeywords.map { URLQueryItem(name: "exclude", value: $0) } }
+        if let notionTasks { items += notionTasks.queryItems + notionFilter.queryItems }
         components.queryItems = items.isEmpty ? nil : items
         return components.url!
     }
     public var title: String {
-        switch kind { case .calculator: return "電卓"; case .worldclock: return "世界時計・勤務時間"; case .weather: return "東京の天気"; case .clock: return "時計"; case .calendar: return "月間カレンダー"; case .upcoming: return "次の予定" }
+        switch kind {
+        case .calculator: return "電卓"; case .worldclock: return "世界時計・勤務時間"; case .weather: return "東京の天気"; case .clock: return "時計"
+        case .calendar: return "月間カレンダー"; case .upcoming: return "次の予定"; case .notionTasks: return "Notionタスク"
+        }
     }
 }
 

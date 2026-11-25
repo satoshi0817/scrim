@@ -143,6 +143,7 @@ func verifyInteractions(fixture: URL) throws {
     try check(preview.isHidden && preview.image == nil, "The live WebView must release its previous snapshot")
     view.command?(3)
     try check(controller.views[record.id] == nil && controller.records.count == PanelPool.liveLimit, "Edit mode must close only the selected panel")
+    try MainActor.assumeIsolated { try verifyWebRelease(fixture: fixture) }
     print("PASS: regular, target-blank, router and menu links; same-page anchor; mode lock, grid drag, edit-only add/close, OAuth popup, cookies, POST redirect, opener + storage callbacks, window.close, session restoration")
 }
 
@@ -166,6 +167,40 @@ func inspectCalendarLogin() throws {
     print(try javascript("document.body.innerText", in: web) as? String ?? "")
 }
 
+/// Per-display mode shares content and keeps geometry per display; switching carries the latest arrangement.
+func verifyDisplayLayoutModes() throws {
+    let canvas = CGSize(width: 1600, height: 1000), small = CGSize(width: 1200, height: 750)
+    let store = SettingsStore(storage: MemorySettingsStorage())
+    store.panels = (0..<3).map {
+        PanelRecord(url: URL(string: "https://example.invalid/\($0)")!,
+                    placement: FractionalFrame(frame: CGRect(x: 20 + $0 * 520, y: 300, width: 480, height: 320), screen: canvas))
+    }
+    store.sharedLayoutReferenceSize = canvas
+    let shared = store.layout(for: "uuid:a", screen: canvas)
+    store.setSameLayoutOnAllDisplays(false)
+    try check(LayoutFitter.frames(layout: store.layout(for: "uuid:a", screen: small), screen: small)
+              == LayoutFitter.relativeFrames(layout: shared, screen: small),
+              "Turning per-display layouts on must keep each display looking like the shared layout")
+    var a = store.layout(for: "uuid:a", screen: canvas)
+    a.panels[0].placement = FractionalFrame(frame: CGRect(x: 40, y: 40, width: 400, height: 300), screen: canvas)
+    a.panels.removeLast()
+    let added = PanelRecord(url: URL(string: "https://example.invalid/added")!,
+                            placement: FractionalFrame(frame: CGRect(x: 900, y: 500, width: 400, height: 300), screen: canvas))
+    a.panels.append(added)
+    store.saveLayout(a, for: "uuid:a")
+    let b = store.layout(for: "uuid:b", screen: canvas)
+    try check(b.panels.map(\.id) == a.panels.map(\.id), "Adding or removing a panel on one display must apply to every display")
+    try check(b.panels[0].placement == shared.panels[0].placement && store.layout(for: "uuid:a", screen: canvas).panels[0].placement == a.panels[0].placement,
+              "Moving a panel on one display must not move it on another")
+    var layouts = store.layoutsByDisplay
+    try check(layouts["uuid:a"]?.editedAt != nil, "Moving a panel must mark the display as edited")
+    layouts["uuid:a"]?.editedAt = Date(timeIntervalSince1970: 100)
+    store.layoutsByDisplay = layouts
+    store.setSameLayoutOnAllDisplays(true)
+    try check(store.panels.map(\.placement) == a.panels.map(\.placement) && store.layoutsByDisplay.isEmpty,
+              "Sharing again must adopt the most recently edited display's arrangement")
+}
+
 func verifyNativeSettings() throws {
     let store = SettingsStore(storage: MemorySettingsStorage())
     let login = FakeLoginItemService()
@@ -180,6 +215,10 @@ func verifyNativeSettings() throws {
     try check(controller.loginModel.isOn && login.registerCalls == 1, "Native login switch must use injected service")
     controller.setSameLayout(false)
     try check(!store.sameLayoutOnAllDisplays && layoutChanges == 1, "Native layout switch must update model and callback")
+    controller.setShowsOverlay(false, on: "uuid:check")
+    try check(!store.showsOverlay(on: "uuid:check") && store.showsOverlay(on: "uuid:other"), "Native display switch must turn the overlay off for that display only")
+    controller.setShowsOverlay(true, on: "uuid:check")
+    try verifyDisplayLayoutModes()
     controller.updateGesture { $0.command = .right; $0.enabled = false }
     try check(store.gesture.command == .right && !store.gesture.enabled && gestureChanges == 1, "Native gesture controls must update settings")
     controller.updateTiming(\.gapMax, value: 0.55)
@@ -374,7 +413,11 @@ private func verifyNoteEditing(in directory: URL) throws {
     controller.add(external)
     let externalPanel = try controller.views.values.first(where: { $0.url == external }).unwrap("Missing external file panel")
     let reader = try (externalPanel.subviews.compactMap { $0 as? NativeTextPanel }.first?.documentView as? PanelTextView).unwrap("Missing RTF reader")
-    externalPanel.command?(26)
+    let hint = try externalPanel.subviews.compactMap { $0 as? PanelEditHint }.first.unwrap("Missing external file menu")
+    try check(hint.accessibilityPerformPress(), "The external file menu must open in edit mode")
+    let menu = try externalPanel.currentMenu.unwrap("Missing external file menu face")
+    let duplicateAction = try menu.actions.first(where: { $0.title == "メモとして複製" }).unwrap("Missing editable copy action")
+    MainActor.assumeIsolated { menu.choose(duplicateAction.tag) }
     let copy = try controller.records.last.flatMap { controller.views[$0.id] }.unwrap("Missing editable copy")
     let editableCopy = try noteView(copy)
     try check(copy.url != external && editableCopy.editor.string == "外部ファイルの本文" && editableCopy.editor.isEditable,
@@ -1199,4 +1242,133 @@ func verifyPanelBehavior() throws {
     controller.onDismiss = { NSApp.terminate(nil) }
     NSApp.activate(ignoringOtherApps: true)
     return controller
+}
+
+/// Edit mode: hovering blurs a panel (snapshot) under a centered pill; a click anywhere fades in its menu face
+/// over the blur, a drag moves the panel instead, right-click and the accessibility press also open it; menu items
+/// switch clock style in place, open a widget's settings face directly, and duplicate the panel.
+/// The panel handles these mouse events itself, so they are sent to it directly (no live pointer needed).
+@MainActor func verifyPanelMenuClicks() throws {
+    func hints(_ view: NSView) -> [PanelEditHint] { (view as? PanelEditHint).map { [$0] } ?? view.subviews.flatMap(hints) }
+    for shared in [true, false] {
+        let store = SettingsStore(storage: MemorySettingsStorage())
+        store.sameLayoutOnAllDisplays = shared
+        let controller = OverlayController(store: store, websiteDataStore: .nonPersistent())
+        controller.show(.pinned); controller.setEditing(true)
+        defer { controller.show(.hidden, immediately: true) }
+        for kind in [WidgetKind.clock, .calculator, .upcoming, .notionTasks] { controller.add(WidgetSpec(kind: kind).url) }
+        controller.root.layoutSubtreeIfNeeded(); controller.panel.displayIfNeeded()
+        let root = controller.root
+        for record in controller.records {
+            let name = "\(WidgetSpec(url: record.url)?.kind.rawValue ?? "?") (shared: \(shared))"
+            guard let view = controller.views[record.id], let hint = hints(view).first else { throw CheckError.failed("Missing menu pill: " + name) }
+            view.layoutSubtreeIfNeeded()
+            try check(!hint.isHidden && abs(hint.frame.midX - view.bounds.midX) < 1 && abs(hint.frame.midY - view.bounds.midY) < 1,
+                      "Menu pill must be centered while editing: " + name)
+            func hover(_ type: NSEvent.EventType) -> NSEvent {
+                NSEvent.enterExitEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: controller.panel.windowNumber,
+                                       context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
+            }
+            view.mouseExited(with: hover(.mouseExited))
+            try check(view.editChrome == (pill: false, blur: false), "Without hover, no pill and no blur: " + name)
+            view.mouseEntered(with: hover(.mouseEntered))
+            try check(view.editChrome == (pill: true, blur: true) && view.hasBlurSnapshot, "Hover must blur a snapshot of the panel and show the pill: " + name)
+            for spot in [NSPoint(x: view.frame.midX, y: view.frame.midY), NSPoint(x: view.frame.maxX - 20, y: view.frame.maxY - 16),
+                         NSPoint(x: view.frame.minX + 30, y: view.frame.minY + 30)] {
+                try check(root.hitTest(spot) === view, "Every part of the panel must take the click: " + name)
+            }
+            func event(_ type: NSEvent.EventType, _ offset: CGFloat = 0) -> NSEvent {
+                let p = view.convert(NSPoint(x: view.bounds.midX + offset, y: view.bounds.midY + 20), to: nil)
+                return NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: controller.panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            func closeMenu() throws {
+                view.closeMenu(animated: true)
+                try waitFor("menu closes: " + name) { !view.isShowingMenu }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+            }
+            let before = view.frame
+            controller.touch(record.id)  // what the overlay's mouse-down monitor does first
+            view.mouseDown(with: event(.leftMouseDown)); view.mouseDragged(with: event(.leftMouseDragged, 2)); view.mouseUp(with: event(.leftMouseUp, 2))
+            try waitFor("menu face from click: " + name) { view.isShowingMenu }
+            try check(view.frame == before, "A click with a little jitter must not move the panel: " + name)
+            try check(view.editChrome == (pill: false, blur: true), "The menu face replaces the pill and keeps the blur behind it: " + name)
+            try check(root.hitTest(NSPoint(x: view.frame.midX, y: view.frame.midY)) !== view, "The menu face must take its own clicks: " + name)
+            try closeMenu()
+            view.mouseDown(with: event(.leftMouseDown)); view.mouseDragged(with: event(.leftMouseDragged, 60))
+            let dragging = view.frame
+            try check(view.editChrome == (pill: false, blur: true), "While dragging, keep the blur and hide the pill: " + name)
+            view.mouseUp(with: event(.leftMouseUp, 60))
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            try check(!view.isShowingMenu && dragging.minX == before.minX + 60, "A drag must move the panel without opening the menu: " + name)
+            view.rightMouseDown(with: event(.rightMouseDown))
+            try waitFor("menu face from right-click: " + name) { view.isShowingMenu }
+            try closeMenu()
+            try check(hint.accessibilityPerformPress(), "Accessibility press must be handled: " + name)
+            try waitFor("menu face from accessibility press: " + name) { view.isShowingMenu }
+            try closeMenu()
+            view.mouseExited(with: hover(.mouseExited))
+            try check(view.editChrome == (pill: false, blur: false), "Leaving the panel must clear the blur and pill: " + name)
+        }
+        // Items: clock style switches in place, a widget settings face replaces the menu, duplicate adds a panel.
+        func panel(_ kind: WidgetKind) throws -> PanelView {
+            guard let record = controller.records.first(where: { WidgetSpec(url: $0.url)?.kind == kind }), let view = controller.views[record.id] else {
+                throw CheckError.failed("Missing \(kind.rawValue)")
+            }
+            return view
+        }
+        func open(_ view: PanelView) throws {
+            view.rightMouseDown(with: NSEvent.mouseEvent(with: .rightMouseDown, location: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: controller.panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
+            try waitFor("menu face opens") { view.isShowingMenu }
+        }
+        let clock = try panel(.clock)
+        try open(clock)
+        try check(clock.currentMenu?.clockStyle == .analog, "Clock menu must show the current style")
+        clock.chooseMenuItem(21)
+        try check(clock.isShowingMenu && WidgetSpec(url: clock.url)?.clockStyle == .digital && clock.currentMenu?.clockStyle == .digital,
+                  "Clock style must switch while the menu stays open and shows the new style")
+        let zone = "Europe/Paris"
+        clock.currentMenu?.toggleZone(zone)
+        try check(clock.currentMenu?.digitalZones.contains(zone) == true, "Time zones must toggle from the menu face")
+        clock.closeMenu(animated: false)
+        let agenda = try panel(.upcoming)
+        try open(agenda)
+        agenda.chooseMenuItem(22)
+        guard let agendaWidget = agenda.subviews.compactMap({ $0 as? NativeWidgetPanel }).first else { throw CheckError.failed("Missing agenda widget") }
+        try check(!agenda.isShowingMenu && agendaWidget.model.upcoming?.isConfiguring == true, "Calendar settings must replace the menu face")
+        try check(hints(agenda).first?.isHidden == true, "The pill must hide while a widget shows its settings")
+        try check(root.hitTest(NSPoint(x: agenda.frame.midX, y: agenda.frame.midY)) !== agenda, "Settings faces must keep their own clicks")
+        agendaWidget.model.upcoming?.isConfiguring = false
+        let count = controller.records.count
+        let calculator = try panel(.calculator)
+        try open(calculator)
+        calculator.chooseMenuItem(2)
+        try check(controller.records.count == count + 1, "Duplicate must add a panel")
+        try waitFor("menu closes after an action") { !calculator.isShowingMenu }
+    }
+    print("PASS: edit-mode panel menu: hover blur + pill, click/right-click/accessibility open the menu face over the blur, drag without menu, jitter tolerance, clock style and zones in place, settings face handoff, duplicate (shared and per-display layouts)")
+}
+
+/// Hidden overlays free their web pages (idle release and memory pressure use this path); the next show reloads them.
+@MainActor func verifyWebRelease(fixture: URL) throws {
+    let store = SettingsStore(storage: MemorySettingsStorage())
+    let controller = OverlayController(store: store, websiteDataStore: .nonPersistent())
+    controller.show(.pinned); controller.setEditing(true)
+    defer { controller.show(.hidden, immediately: true) }
+    controller.add(fixture); controller.add(WidgetSpec(kind: .clock).url)
+    controller.setEditing(false)
+    guard let page = controller.views.values.first(where: { $0.web != nil }) else { throw CheckError.failed("Missing web panel") }
+    try waitFor("web panel loads") { page.web?.isLoading == false }
+    controller.releaseWebPanels(force: true)
+    try check(page.web != nil, "Web pages must not be released while the overlay is shown")
+    controller.show(.hidden, immediately: true)
+    store.releasesIdleWebPanels = false
+    controller.releaseWebPanels(force: false)
+    try check(page.web != nil, "Turning the setting off must keep web pages")
+    controller.releaseWebPanels(force: true)
+    try check(page.web == nil, "Releasing must free the web page while hidden")
+    try check(controller.views.values.contains { WidgetSpec(url: $0.url)?.kind == .clock && $0.isLive }, "Native widgets stay")
+    controller.show(.pinned)
+    try waitFor("web page reloads on show") { page.web != nil && page.web?.isLoading == false }
 }

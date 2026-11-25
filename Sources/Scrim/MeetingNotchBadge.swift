@@ -8,7 +8,6 @@ extension Notification.Name {
 
 @MainActor final class MeetingNotchBadge: NSObject {
     private let store: SettingsStore
-    private let identity = DisplayIdentity()
     private var sources: [URL: UpcomingEventsModel] = [:]
     private var lastFetch = Date.distantPast
     private var timer: Timer?
@@ -61,11 +60,11 @@ extension Notification.Name {
     }
     @objc private func updateBadge() {
         guard store.notchMeetingsEnabled, let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 && $0.auxiliaryTopRightArea != nil }),
-              let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea,
-              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+              let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else {
             sources.removeAll(); panel.orderOut(nil); return
         }
-        let panels = store.panelsAcrossPages(display: identity.key(for: number.uint32Value))
+        // Independent of per-display visibility: the badge has its own switch.
+        let panels = store.panelsAcrossPages()
         let urls = Set(panels.lazy.map(\.url).filter { WidgetSpec(url: $0)?.kind == .upcoming })
         sources = sources.filter { urls.contains($0.key) }
         let now = Date()

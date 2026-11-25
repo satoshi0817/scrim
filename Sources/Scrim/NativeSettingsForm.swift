@@ -62,6 +62,7 @@ private struct SettingsDisclosureStyle: DisclosureGroupStyle {
 struct NativeSettingsForm: View {
     @ObservedObject var controller: SettingsController
     let page: NativeSettingsPage
+    @State private var notionTokenDraft = ""
     private var store: SettingsStore { controller.store }
     private func gesture<Value>(_ key: WritableKeyPath<GestureSettings, Value>) -> Binding<Value> {
         Binding(get: { store.gesture[keyPath: key] }, set: { value in controller.updateGesture { $0[keyPath: key] = value } })
@@ -213,6 +214,12 @@ struct NativeSettingsForm: View {
             Stepper("秒数", value: binding, in: 0.01...2, step: 0.05).labelsHidden()
         }
     }
+    private func saveNotionToken() {
+        let token = notionTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
+        controller.saveNotionToken(token)
+        notionTokenDraft = ""
+    }
     private func notchBinding<T>(_ key: ReferenceWritableKeyPath<SettingsStore, T>) -> Binding<T> {
         Binding(get: { store[keyPath: key] }, set: { store[keyPath: key] = $0; controller.refresh(); NotificationCenter.default.post(name: .meetingBadgeChanged, object: nil) })
     }
@@ -221,9 +228,47 @@ struct NativeSettingsForm: View {
             Section {
                 Toggle(DisplayLayoutCopy.checkboxTitle, isOn: Binding(get: { store.sameLayoutOnAllDisplays }, set: controller.setSameLayout))
             } header: { Text("ディスプレイ") } footer: {
-                Text(store.sameLayoutOnAllDisplays ? "画面が変わっても同じ並びで表示します。" : "ディスプレイごとにパネルの並びを記憶します。")
+                Text((store.sameLayoutOnAllDisplays ? DisplayLayoutCopy.sharedFooter : DisplayLayoutCopy.perDisplayFooter) + "\n" + DisplayLayoutCopy.switchFooter)
             }
             .toggleStyle(.switch)
+            Section {
+                ForEach(controller.displayChoices) { display in
+                    Toggle(display.name, isOn: Binding(get: { store.showsOverlay(on: display.id) }, set: { controller.setShowsOverlay($0, on: display.id) }))
+                        .disabled(display.id.hasPrefix("ephemeral:"))
+                }
+            } header: { Text(DisplayLayoutCopy.visibilityHeader) } footer: {
+                Text(DisplayLayoutCopy.visibilityFooter)
+            }
+            .toggleStyle(.switch)
+            Section {
+                if controller.notionHasToken {
+                    LabeledContent("トークン", value: "登録済み（キーチェーン）")
+                    HStack {
+                        Button("接続を確認") { controller.checkNotionToken() }.disabled(controller.notionChecking)
+                        if controller.notionChecking { ProgressView().controlSize(.small) }
+                        Spacer()
+                        Button("トークンを削除", role: .destructive) { controller.removeNotionToken() }
+                    }
+                } else {
+                    SecureField("トークン", text: $notionTokenDraft, prompt: Text("ntn_… または secret_…"))
+                        .onSubmit { saveNotionToken() }
+                    HStack {
+                        Spacer()
+                        Button("保存して確認") { saveNotionToken() }
+                            .disabled(notionTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller.notionChecking)
+                    }
+                }
+                Picker("タスクの文字サイズ", selection: Binding(get: { store.notionTextSize }, set: controller.setNotionTextSize)) {
+                    ForEach(NotionTextSize.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                if let status = controller.notionStatus {
+                    Text(status.text).font(.callout).foregroundStyle(status.ok ? Color.secondary : ScrimPalette.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: { Text("Notion") } footer: {
+                Text("「Notionタスク」パネルが使うトークンです。Notionの開発者ポータルで個人アクセストークンか内部接続のトークンを作り、ここに貼り付けてください。内部接続の場合は、使うデータベースや作成先のページの「•••」→「接続」から、その接続を追加してください。トークンはこのMacのキーチェーンだけに保存します。")
+            }
             Section {
                 Toggle("開くたびに今の時間帯へ移動", isOn: Binding(get: { store.agendaResetsScrollOnOpen }, set: controller.setAgendaResetsScrollOnOpen))
             } header: { Text("次の予定") } footer: {
@@ -244,6 +289,11 @@ struct NativeSettingsForm: View {
                 Toggle("3時間ごとの予報を表示", isOn: Binding(get: { store.weatherShowsHourly }, set: controller.setWeatherShowsHourly))
             } header: { Text("天気") } footer: {
                 Text("時間ごとの気温・天気・降雨確率はwttr.in / WorldWeatherOnline、現在の観測値と日々の予報は気象庁を利用します。")
+            }.toggleStyle(.switch)
+            Section {
+                Toggle("使っていないWebページを休止する", isOn: Binding(get: { store.releasesIdleWebPanels }, set: controller.setReleasesIdleWebPanels))
+            } header: { Text("メモリ") } footer: {
+                Text("Scrimを閉じたまま10分たつと、Webパネルを画像に置き換えてメモリを解放します。次に開いたときに読み込み直します。ログインは保たれますが、入力途中の内容やスクロール位置は戻りません。")
             }.toggleStyle(.switch)
             Section {
                 Toggle("表示するときに今日へ戻す", isOn: Binding(get: { store.calendarReturnsToToday }, set: controller.setCalendarReturnsToToday))

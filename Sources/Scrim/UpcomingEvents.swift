@@ -222,17 +222,15 @@ struct UpcomingEventsView: View {
     var body: some View {
         ZStack {
             front
-                .modifier(CalendarCardFace(angle: reduceMotion ? 0 : model.isConfiguring ? 180 : 0))
-                .opacity(reduceMotion && model.isConfiguring ? 0 : 1)
+                .modifier(CalendarCardFace(hidden: model.isConfiguring ? 1 : 0, motion: !reduceMotion))
                 .allowsHitTesting(!model.isConfiguring)
                 .accessibilityHidden(model.isConfiguring)
             configuration
-                .modifier(CalendarCardFace(angle: reduceMotion ? 0 : model.isConfiguring ? 0 : -180))
-                .opacity(reduceMotion && !model.isConfiguring ? 0 : 1)
+                .modifier(CalendarCardFace(hidden: model.isConfiguring ? 0 : 1, motion: !reduceMotion))
                 .allowsHitTesting(model.isConfiguring)
                 .accessibilityHidden(!model.isConfiguring)
         }
-        .animation(.easeInOut(duration: reduceMotion ? 0.15 : 0.42), value: model.isConfiguring)
+        .animation(.easeInOut(duration: reduceMotion ? 0.15 : 0.22), value: model.isConfiguring)
     }
     private var front: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -246,7 +244,7 @@ struct UpcomingEventsView: View {
                     .font(.system(size: 11, weight: .medium)).monospacedDigit().foregroundStyle(.secondary)
                     .padding(.horizontal, 9).padding(.vertical, 5)
                     .background(Capsule().fill(Color.primary.opacity(0.05)))
-            }.padding(.trailing, editing ? 28 : 0)
+            }
             if model.status == .fullAccess {
                 if model.events.isEmpty {
                     Spacer(minLength: 0)
@@ -576,12 +574,17 @@ struct UpcomingEventsView: View {
 }
 
 
+/// Switches between the agenda and its settings with a soft cross-fade, matching panel menus: the outgoing
+/// face fades, blurs and shrinks slightly while the other fades in. Nothing turns. Fade only with Reduce Motion.
 private struct CalendarCardFace: AnimatableModifier {
-    var angle: Double
-    var animatableData: Double { get { angle } set { angle = newValue } }
+    /// 0 while this face is shown, 1 while hidden.
+    var hidden: Double
+    var motion: Bool
+    var animatableData: Double { get { hidden } set { hidden = newValue } }
     func body(content: Content) -> some View {
-        content.opacity(abs(angle) < 90 ? 1 : 0)
-            .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
+        content.opacity(1 - hidden)
+            .scaleEffect(motion ? 1 - 0.03 * hidden : 1)
+            .blur(radius: motion ? 6 * hidden : 0)
     }
 }
 
