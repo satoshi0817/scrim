@@ -153,7 +153,7 @@ final class FilePanelTests: XCTestCase {
         let data = try Data(contentsOf: root.appendingPathComponent("Resources/Scrim/Info.plist"))
         let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
         let types = try XCTUnwrap(plist["CFBundleDocumentTypes"] as? [[String: Any]])
-        XCTAssertEqual(Set(types.flatMap { $0["LSItemContentTypes"] as? [String] ?? [] }), Set(["public.pdf", "public.html", "public.xhtml", "public.plain-text", "net.daringfireball.markdown"]))
+        XCTAssertEqual(Set(types.flatMap { $0["LSItemContentTypes"] as? [String] ?? [] }), Set(["public.pdf", "public.html", "public.xhtml", "public.plain-text", "public.rtf", "net.daringfireball.markdown"]))
         for type in types {
             XCTAssertEqual(type["CFBundleTypeRole"] as? String, "Viewer")
             XCTAssertEqual(type["LSHandlerRank"] as? String, "Alternate")
