@@ -258,16 +258,16 @@ struct NativeSettingsForm: View {
                             .disabled(notionTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller.notionChecking)
                     }
                 }
-                Picker("タスクの文字サイズ", selection: Binding(get: { store.notionTextSize }, set: controller.setNotionTextSize)) {
-                    ForEach(NotionTextSize.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
                 if let status = controller.notionStatus {
                     Text(status.text).font(.callout).foregroundStyle(status.ok ? Color.secondary : ScrimPalette.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } header: { Text("Notion") } footer: {
                 Text("「Notionタスク」パネルが使うトークンです。Notionの開発者ポータルで個人アクセストークンか内部接続のトークンを作り、ここに貼り付けてください。内部接続の場合は、使うデータベースや作成先のページの「•••」→「接続」から、その接続を追加してください。トークンはこのMacのキーチェーンだけに保存します。")
+            }
+            Section("文字サイズ") {
+                PanelTextSizePicker(content: .notes, store: store)
+                PanelTextSizePicker(content: .tasks, store: store)
             }
             Section {
                 Toggle("開くたびに今の時間帯へ移動", isOn: Binding(get: { store.agendaResetsScrollOnOpen }, set: controller.setAgendaResetsScrollOnOpen))

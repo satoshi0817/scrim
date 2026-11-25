@@ -82,24 +82,51 @@ struct WebPanelSettings: View {
     @State var address: String
     @State var mode: WebDisplayMode
     let save: (URL, WebDisplayMode) -> Void
-    let cancel: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Webパネル設定").font(.title2.bold())
-            TextField("URL", text: $address).textFieldStyle(.roundedBorder)
-            Picker("表示モード", selection: $mode) {
-                Text("PC表示").tag(WebDisplayMode.desktop)
-                Text("スマホ表示").tag(WebDisplayMode.mobile)
-            }.pickerStyle(.segmented)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    TextField("URL", text: $address).textFieldStyle(.roundedBorder)
+                    Picker("表示モード", selection: $mode) {
+                        Text("PC表示").tag(WebDisplayMode.desktop)
+                        Text("スマホ表示").tag(WebDisplayMode.mobile)
+                    }.pickerStyle(.segmented)
+                }.padding(.vertical, 6)
+            }
             HStack {
                 Spacer()
-                Button("キャンセル", action: cancel)
                 Button("保存") {
                     if let url = SettingsStore.normalize(address) { save(url, mode) }
                 }.keyboardShortcut(.defaultAction).disabled(SettingsStore.normalize(address) == nil)
             }
-        }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+}
+
+struct PanelSettingsSurface<Content: View>: View {
+    let title: String
+    var closeTitle = "完了"
+    let close: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(title).font(.title2.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button(closeTitle, action: close).keyboardShortcut(.cancelAction)
+            }
+            content()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(nsColor: .windowBackgroundColor))
+                .strokeBorder(Color.primary.opacity(0.12))
+                .shadow(color: .black.opacity(0.26), radius: 24, y: 8)
+        }
     }
 }

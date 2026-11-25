@@ -4,7 +4,7 @@ import ScrimCore
 
 /// Native task list backed by one Notion data source. Reads open tasks, adds, completes (with undo) and edits.
 @MainActor final class NotionTasksModel: ObservableObject {
-    enum SetupStep: Equatable { case chooseSource, mapColumns, createDatabase }
+    enum SetupStep: Hashable { case chooseSource, mapColumns, createDatabase }
     /// `write` reports whether Notion accepted the completion; `removal` hides the row after the undo window.
     struct PendingCompletion { var previousStatus: String?; var write: Task<Bool, Never>; var removal: Task<Void, Never> }
 
@@ -26,10 +26,13 @@ import ScrimCore
     @Published private(set) var linkNote: String?
     @Published private(set) var searchResults: [NotionSearchResult] = []
     @Published private(set) var searching = false
+    @Published private(set) var creatingDatabase = false
     @Published var draft: NotionTaskMapping?
     @Published private(set) var draftSchema: NotionDataSourceSchema?
     @Published var newDatabaseTitle = NotionTaskDatabase.defaultTitle
     @Published var setupError: String?
+    var onRequestConfiguration: (() -> Void)?
+    var onFinishConfiguration: (() -> Void)?
     var onConfigurationChange: ((NotionTaskMapping) -> Void)?
     var onOpenPage: ((URL) -> Void)?
     // Filtering (applied to the loaded open tasks, so it is instant and costs no requests)
@@ -47,6 +50,7 @@ import ScrimCore
     private var timer: Timer?
     private var loadTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
+    private var setupSession = UUID()
     private var revision = 0
     private var tokenObserver: NSObjectProtocol?
 
@@ -274,14 +278,16 @@ import ScrimCore
     // MARK: Setup
 
     func beginConfiguring() {
+        setupSession = UUID()
         isConfiguring = true; setupError = nil
         draft = mapping; draftSchema = nil
-        step = .chooseSource; searchQuery = ""
-        search()
+        step = .chooseSource; searchQuery = ""; linkNote = nil; searchResults = []
         if let mapping { chooseSource(mapping.dataSourceID, keeping: mapping) }
+        else { search() }
     }
     func cancelConfiguring() {
-        isConfiguring = false; searchTask?.cancel(); setupError = nil
+        setupSession = UUID()
+        isConfiguring = false; searchTask?.cancel(); searching = false; setupError = nil
         if active { refresh(force: true) }
     }
     func search() {
@@ -297,7 +303,7 @@ import ScrimCore
                 self.searchResults = results; self.setupError = nil
             } catch is CancellationError { return
             } catch {
-                guard let self else { return }
+                guard let self, !Task.isCancelled else { return }
                 self.searchResults = []; self.setupError = (error as? NotionAPIError ?? .network).message
             }
             self?.searching = false
@@ -326,7 +332,7 @@ import ScrimCore
                 }
             } catch is CancellationError {
             } catch {
-                guard let self else { return }
+                guard let self, !Task.isCancelled else { return }
                 self.searching = false
                 let failure = error as? NotionAPIError ?? .network
                 self.setupError = failure.status == 400
@@ -335,16 +341,29 @@ import ScrimCore
             }
         }
     }
-    func showCreateDatabase() { step = .createDatabase; searchQuery = ""; search() }
-    func showSourceList() { step = .chooseSource; searchQuery = ""; search() }
+    func showCreateDatabase() { selectSetupTab(.createDatabase) }
+    func showSourceList() { selectSetupTab(.chooseSource) }
+
+    func selectSetupTab(_ tab: SetupStep) {
+        guard step != tab else { return }
+        searchTask?.cancel()
+        searching = false; setupError = nil; linkNote = nil
+        step = tab
+        if tab != .mapColumns {
+            searchQuery = ""; searchResults = []
+            search()
+        }
+    }
 
     func chooseSource(_ id: String, keeping existing: NotionTaskMapping? = nil) {
         let client = self.client
-        setupError = nil
-        Task { [weak self] in
+        searchTask?.cancel()
+        setupError = nil; searching = true
+        searchTask = Task { [weak self] in
             do {
                 let schema = try await client.schema(id)
-                guard let self else { return }
+                guard let self, !Task.isCancelled else { return }
+                self.searching = false
                 self.draftSchema = schema
                 if let existing, existing.dataSourceID == id, schema.mappingProblem(existing) == nil { self.draft = existing }
                 else if let guess = schema.defaultMapping() { self.draft = guess }
@@ -355,23 +374,31 @@ import ScrimCore
                 }
                 self.step = .mapColumns
             } catch {
-                self?.setupError = (error as? NotionAPIError ?? .network).message
+                guard let self, !Task.isCancelled else { return }
+                self.searching = false
+                self.setupError = (error as? NotionAPIError ?? .network).message
             }
         }
     }
     func createDatabase(under page: NotionSearchResult) {
+        guard !creatingDatabase else { return }
         let client = self.client, title = newDatabaseTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        searching = true; setupError = nil
+        let session = setupSession
+        creatingDatabase = true; setupError = nil
         Task { [weak self] in
+            defer { self?.creatingDatabase = false }
             do {
                 let mapping = try await client.createTaskDatabase(parentPage: page.id, title: title.isEmpty ? NotionTaskDatabase.defaultTitle : title)
-                guard let self else { return }
-                self.draftSchema = try await client.schema(mapping.dataSourceID)
+                let schema = try await client.schema(mapping.dataSourceID)
+                guard let self, self.setupSession == session else { return }
+                self.searchTask?.cancel()
+                self.searching = false
+                self.draftSchema = schema
                 self.draft = mapping; self.step = .mapColumns
             } catch {
-                self?.setupError = (error as? NotionAPIError ?? .network).message
+                guard let self, self.setupSession == session else { return }
+                self.setupError = (error as? NotionAPIError ?? .network).message
             }
-            self?.searching = false
         }
     }
     func finishConfiguring() {
@@ -383,6 +410,7 @@ import ScrimCore
         mapping = draft; schema = draftSchema; tasks = []; error = nil; setupError = nil
         isConfiguring = false
         onConfigurationChange?(draft)
+        onFinishConfiguration?()
         refresh(force: true)
     }
 }
@@ -394,15 +422,14 @@ struct NotionTasksView: View {
     let editing: Bool
     @State private var newTitle = ""
     @State private var newDue: Date?
-    @ObservedObject private var appearance = NotionAppearance.shared
+    @ObservedObject private var appearance = PanelTextAppearance.shared
     @FocusState private var focus: Field?
     enum Field: Hashable { case add }
     private var compact: Bool { size.height < 260 || size.width < 300 }
 
     var body: some View {
         Group {
-            if model.isConfiguring { NotionTasksSetupView(model: model) }
-            else if let detail = model.detail, !editing {
+            if let detail = model.detail, !editing {
                 NotionTaskDetailView(model: detail, now: now, close: { model.closeDetail() }).transition(.opacity)
             } else { list.transition(.opacity) }
         }
@@ -439,7 +466,7 @@ struct NotionTasksView: View {
                 Spacer(minLength: 0)
             } else if model.mapping == nil {
                 notice("表示するデータベースが未設定です。", detail: editing ? "パネルをクリックして、メニューの「データベースと列を設定…」を選んでください。" : nil)
-                if !editing { Button("データベースを設定…") { model.beginConfiguring() }.controlSize(.regular) }
+                if !editing { Button("データベースを設定…") { model.onRequestConfiguration?() }.controlSize(.regular) }
                 Spacer(minLength: 0)
             } else if model.showingFilters && !editing {
                 NotionTaskFiltersView(model: model)
@@ -456,7 +483,7 @@ struct NotionTasksView: View {
                 .overlay {
                     if visible.isEmpty && model.error == nil && model.lastLoaded != nil {
                         Text(model.tasks.isEmpty ? "未完了のタスクはありません" : "条件に合うタスクはありません")
-                            .font(.system(size: appearance.textSize.detail + 2)).foregroundStyle(.secondary)
+                            .font(.system(size: appearance.notionSize.detail + 2)).foregroundStyle(.secondary)
                     }
                 }
                 // Adding needs a database that has loaded at least once.
@@ -471,7 +498,7 @@ struct NotionTasksView: View {
             HStack(spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.system(size: 12))
-                    TextField("タスクを絞り込む", text: $model.filterText).textFieldStyle(.plain).font(.system(size: appearance.textSize.detail + 1))
+                    TextField("タスクを絞り込む", text: $model.filterText).textFieldStyle(.plain).font(.system(size: appearance.notionSize.detail + 1))
                     if !model.filterText.isEmpty {
                         Button { model.filterText = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.borderless).foregroundStyle(.secondary).help("文字の絞り込みを消す")
@@ -488,7 +515,7 @@ struct NotionTasksView: View {
             }
             if let summary = model.filterSummary {
                 HStack(spacing: 6) {
-                    Text(summary).font(.system(size: appearance.textSize.detail)).foregroundStyle(ScrimPalette.blue).lineLimit(1)
+                    Text(summary).font(.system(size: appearance.notionSize.detail)).foregroundStyle(ScrimPalette.blue).lineLimit(1)
                     Spacer(minLength: 4)
                     Button("解除") { model.clearFilters() }.buttonStyle(.borderless).controlSize(.small).disabled(editing)
                 }
@@ -508,7 +535,7 @@ struct NotionTasksView: View {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(ScrimPalette.amber)
             Text(error.message).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            if error.needsMapping && !editing { Button("設定") { model.beginConfiguring() }.controlSize(.small) }
+            if error.needsMapping && !editing { Button("設定") { model.onRequestConfiguration?() }.controlSize(.small) }
             else if !editing { Button("再読み込み") { model.refresh(force: true) }.controlSize(.small) }
         }
         .padding(10).background(RoundedRectangle(cornerRadius: 8).fill(ScrimPalette.amber.opacity(0.12)))
@@ -517,7 +544,7 @@ struct NotionTasksView: View {
     /// Click a task to open it in the panel; the circle completes it.
     private func row(_ task: NotionTask) -> some View {
         let done = model.isCompleted(task)
-        let size = appearance.textSize
+        let size = appearance.notionSize
         let assignees = model.mapping?.assigneeProperty.flatMap { task.choices[$0] }?.map(\.name).filter { !$0.isEmpty } ?? []
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
             Button { model.complete(task) } label: {
@@ -577,7 +604,7 @@ struct NotionTasksView: View {
     private var addRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "plus").foregroundStyle(.secondary)
-            TextField("タスクを追加", text: $newTitle).textFieldStyle(.plain).font(.system(size: appearance.textSize.task))
+            TextField("タスクを追加", text: $newTitle).textFieldStyle(.plain).font(.system(size: appearance.notionSize.task))
                 .focused($focus, equals: .add)
                 .onSubmit { submitNew() }
             if model.mapping?.dueProperty != nil { dueEditor($newDue) }
@@ -595,30 +622,47 @@ struct NotionTasksView: View {
 
 struct NotionTasksSetupView: View {
     @ObservedObject var model: NotionTasksModel
+    var actions: AnyView?
+    var textSizeStore: SettingsStore?
+    private enum Tab: Hashable { case setup(NotionTasksModel.SetupStep), textSize, actions }
+    @State private var otherTab: Tab?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(title).font(.system(size: 16, weight: .semibold))
-                Spacer()
-                Button("キャンセル") { model.cancelConfiguring() }.controlSize(.small)
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Notionタスクの設定タブ", selection: Binding<Tab>(
+                get: { otherTab ?? .setup(model.step) },
+                set: { tab in
+                    if case .setup(let step) = tab {
+                        otherTab = nil
+                        model.selectSetupTab(step)
+                    } else { otherTab = tab }
+                })) {
+                Text("データベース").tag(Tab.setup(.chooseSource))
+                Text("列の対応付け").tag(Tab.setup(.mapColumns))
+                Text("新規作成").tag(Tab.setup(.createDatabase))
+                if textSizeStore != nil { Text("文字サイズ").tag(Tab.textSize) }
+                if actions != nil { Text("操作").tag(Tab.actions) }
             }
-            if let error = model.setupError {
-                Text(error).font(.system(size: 12)).foregroundStyle(ScrimPalette.red).fixedSize(horizontal: false, vertical: true)
-            }
-            switch model.step {
-            case .chooseSource: sourceList
-            case .createDatabase: pageList
-            case .mapColumns: columns
+            .pickerStyle(.segmented).labelsHidden().disabled(model.creatingDatabase)
+            if otherTab == .actions, let actions {
+                actions
+            } else if otherTab == .textSize, let textSizeStore {
+                PanelTextSizePicker(content: .tasks, store: textSizeStore)
+                Text("すべてのNotionタスクパネルに適用されます。").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            } else {
+                if let error = model.setupError {
+                    Text(error).font(.system(size: 12)).foregroundStyle(ScrimPalette.red).fixedSize(horizontal: false, vertical: true)
+                }
+                switch model.step {
+                case .chooseSource: sourceList
+                case .createDatabase: pageList
+                case .mapColumns: columns
+                }
             }
         }
     }
-    private var title: String {
-        switch model.step {
-        case .chooseSource: return "データベースを選ぶ"
-        case .createDatabase: return "新しいタスクDBを作る"
-        case .mapColumns: return "列を対応付ける"
-        }
-    }
+
     private var searchField: some View {
         HStack {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -668,8 +712,6 @@ struct NotionTasksSetupView: View {
             HStack {
                 Text("一覧にない場合は、Notionでデータベースの「•••」→「接続」からトークンの接続を追加してください。")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                Button("新しく作成…") { model.showCreateDatabase() }.controlSize(.small)
             }
         }
     }
@@ -680,7 +722,8 @@ struct NotionTasksSetupView: View {
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             searchField
             results { model.createDatabase(under: $0) }
-            Button("既存のデータベースから選ぶ") { model.showSourceList() }.controlSize(.small)
+                .disabled(model.creatingDatabase)
+            if model.creatingDatabase { ProgressView("データベースを作成中…").controlSize(.small) }
         }
     }
     @ViewBuilder private var columns: some View {
@@ -709,13 +752,17 @@ struct NotionTasksSetupView: View {
             }
             .formStyle(.grouped).scrollContentBackground(.hidden)
             HStack {
-                Button("データベースを選び直す") { model.showSourceList() }.controlSize(.small)
                 Spacer()
                 Button("このデータベースを使う") { model.finishConfiguring() }.buttonStyle(.borderedProminent)
                     .disabled(schema.mappingProblem(draft) != nil)
             }
         } else {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            if model.searching {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView("データベースを選択してください", systemImage: "tablecells",
+                                       description: Text("「データベース」または「新規作成」タブから設定します。"))
+            }
         }
     }
     private func setCompletion(_ id: String, schema: NotionDataSourceSchema) {

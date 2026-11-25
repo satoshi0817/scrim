@@ -248,7 +248,8 @@ public final class SettingsStore {
     public var appearanceMode: AppearanceMode { get { read("appearanceMode", fallback: .system) } set { write(newValue, "appearanceMode") } }
     public var agendaResetsScrollOnOpen: Bool { get { read("agendaResetsScrollOnOpen", fallback: true) } set { write(newValue, "agendaResetsScrollOnOpen") } }
     public var peekAllowsInteraction: Bool { get { read("peekAllowsInteraction", fallback: true) } set { write(newValue, "peekAllowsInteraction") } }
-    public var notionTextSize: NotionTextSize { get { read("notionTextSize", fallback: .standard) } set { write(newValue, "notionTextSize") } }
+    public var noteTextSize: PanelTextSize { get { read("noteTextSize", fallback: .standard) } set { write(newValue, "noteTextSize") } }
+    public var notionTextSize: PanelTextSize { get { read("notionTextSize", fallback: .standard) } set { write(newValue, "notionTextSize") } }
     /// Swap web panels for snapshots after the overlay has been hidden for a while, to free memory.
     public var releasesIdleWebPanels: Bool { get { read("releasesIdleWebPanels", fallback: true) } set { write(newValue, "releasesIdleWebPanels") } }
     public var calendarReturnsToToday: Bool { get { read("calendarReturnsToToday", fallback: true) } set { write(newValue, "calendarReturnsToToday") } }

@@ -3,11 +3,6 @@ import SwiftUI
 import ScrimCore
 
 /// Text size for Notion task panels, from Settings. Shared so every panel updates at once.
-@MainActor final class NotionAppearance: ObservableObject {
-    static let shared = NotionAppearance()
-    @Published var textSize: NotionTextSize = .standard
-}
-
 extension NotionClient {
     /// A task's page content: top-level blocks plus nested children a few levels deep, capped so huge pages stay
     /// cheap. Returns whether the cap cut anything off.
@@ -328,12 +323,12 @@ struct NotionTaskDetailView: View {
     @ObservedObject var model: NotionTaskDetailModel
     let now: Date
     let close: () -> Void
-    @ObservedObject private var appearance = NotionAppearance.shared
+    @ObservedObject private var appearance = PanelTextAppearance.shared
     @State private var newText = ""
     @State private var newKind: NotionBlock.Kind = .paragraph
     @FocusState private var focus: Field?
     enum Field: Hashable { case title, block, add }
-    private var size: NotionTextSize { appearance.textSize }
+    private var size: PanelTextSize { appearance.notionSize }
     static let labelWidth: CGFloat = 76
 
     var body: some View {

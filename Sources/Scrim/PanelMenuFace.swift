@@ -3,7 +3,7 @@ import SwiftUI
 import CoreImage
 import ScrimCore
 
-/// One entry on the back of a panel. `tag` is the same command number the panel already handles.
+/// One command in a panel's settings.
 struct PanelMenuItem: Identifiable {
     let tag: Int
     let title: String
@@ -12,10 +12,9 @@ struct PanelMenuItem: Identifiable {
     var id: Int { tag }
 }
 
-/// What the back face shows for one panel, and the callbacks it drives.
+/// Settings and commands for a single panel.
 @MainActor final class PanelMenuModel: ObservableObject {
     let title: String
-    let setupItems: [PanelMenuItem]
     let actions: [PanelMenuItem]
     let remove: PanelMenuItem
     /// Clock panels only.
@@ -26,9 +25,9 @@ struct PanelMenuItem: Identifiable {
     var toggleZone: (String) -> Void = { _ in }
     var close: () -> Void = {}
 
-    init(title: String, setupItems: [PanelMenuItem], actions: [PanelMenuItem], remove: PanelMenuItem,
+    init(title: String, actions: [PanelMenuItem], remove: PanelMenuItem,
          clockStyle: ClockStyle? = nil, digitalZones: [String] = []) {
-        self.title = title; self.setupItems = setupItems; self.actions = actions; self.remove = remove
+        self.title = title; self.actions = actions; self.remove = remove
         self.clockStyle = clockStyle; self.digitalZones = digitalZones
     }
     var commonZones: [String] { Set(WorkCity.names.keys).union(digitalZones).sorted() }
@@ -44,42 +43,47 @@ struct PanelMenuItem: Identifiable {
     }
 }
 
-/// A panel's settings and actions in edit mode, shown over the blurred panel.
+/// A panel's settings and commands in the centered overlay.
 struct PanelMenuFace: View {
     @ObservedObject var model: PanelMenuModel
+    var settings: AnyView?
+    var notion: NotionTasksModel?
+    var showsActions: Bool
+    let store: SettingsStore
+    @State private var showingActions = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("パネルの設定").font(.headline)
-                    Text(model.title).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                }
-                Spacer(minLength: 4)
-                Button("完了") { model.close() }.buttonStyle(.borderedProminent).controlSize(.small)
-                    .keyboardShortcut(.cancelAction)
-            }
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 12) {
-                    if model.clockStyle != nil { clockSection; Divider() }
-                    if !model.setupItems.isEmpty {
-                        group(model.setupItems)
-                        Divider()
+        PanelSettingsSurface(title: model.title, closeTitle: notion == nil ? "完了" : "閉じる", close: model.close) {
+            if let notion {
+                NotionTasksSetupView(model: notion, actions: showsActions ? AnyView(actions) : nil, textSizeStore: store)
+            } else if settings != nil || model.clockStyle != nil {
+                Picker("パネル設定のタブ", selection: $showingActions) {
+                    Text("設定").tag(false)
+                    Text("操作").tag(true)
+                }.pickerStyle(.segmented).labelsHidden()
+                if showingActions { actions }
+                else if let settings { settings }
+                else {
+                    ScrollView {
+                        clockSection.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
                     }
-                    group(model.actions)
-                    Divider()
-                    row(model.remove)
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                actions
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Translucent, so the blurred panel underneath shows through like frosted glass.
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.8))
     }
 
-    private func group(_ items: [PanelMenuItem]) -> some View {
-        VStack(alignment: .leading, spacing: 2) { ForEach(items) { row($0) } }
+    private var actions: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(model.actions) { row($0) }
+                Divider().padding(.vertical, 6)
+                row(model.remove)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
+
     private func row(_ item: PanelMenuItem) -> some View {
         PanelMenuRow(item: item) { model.choose(item.tag) }
     }

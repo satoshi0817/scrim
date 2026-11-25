@@ -22,6 +22,21 @@ final class OverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
     var dismiss: (() -> Void)?
     override func cancelOperation(_ sender: Any?) { dismiss?() }
+
+    override func sendEvent(_ event: NSEvent) {
+        guard let root = contentView as? Backdrop, root.editing else { super.sendEvent(event); return }
+        switch event.type {
+        case .cursorUpdate, .mouseMoved, .mouseEntered, .mouseExited:
+            // AppKit can ask a WebKit or text child for its cursor even when the panel owns the hit.
+            if let panel = root.hitTest(event.locationInWindow) as? PanelView {
+                if event.type != .cursorUpdate { super.sendEvent(event) }
+                panel.editingCursor(at: panel.convert(event.locationInWindow, from: nil)).set()
+                return
+            }
+        default: break
+        }
+        super.sendEvent(event)
+    }
 }
 final class Backdrop: NSView {
     var dismiss: (() -> Void)?
@@ -62,6 +77,49 @@ private extension NSView {
     }
 }
 
+private struct PanelResizeEdges: OptionSet {
+    let rawValue: Int
+    static let left = Self(rawValue: 1 << 0)
+    static let right = Self(rawValue: 1 << 1)
+    static let bottom = Self(rawValue: 1 << 2)
+    static let top = Self(rawValue: 1 << 3)
+
+    private static let fallingDiagonal = diagonalCursor("arrow.up.left.and.arrow.down.right")
+    private static let risingDiagonal = diagonalCursor("arrow.up.right.and.arrow.down.left")
+
+    private static func diagonalCursor(_ symbol: String) -> NSCursor {
+        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 16, weight: .semibold)) else { return .resizeLeftRight }
+        let size = image.size
+        return NSCursor(image: image, hotSpot: NSPoint(x: size.width / 2, y: size.height / 2))
+    }
+
+    var cursor: NSCursor {
+        if #available(macOS 15.0, *) {
+            let position: NSCursor.FrameResizePosition
+            switch self {
+            case .left: position = .left
+            case .right: position = .right
+            case .bottom: position = .bottom
+            case .top: position = .top
+            case [.left, .bottom]: position = .bottomLeft
+            case [.left, .top]: position = .topLeft
+            case [.right, .bottom]: position = .bottomRight
+            case [.right, .top]: position = .topRight
+            default: return .openHand
+            }
+            return .frameResize(position: position, directions: .all)
+        }
+        switch self {
+        case .left, .right: return .resizeLeftRight
+        case .top, .bottom: return .resizeUpDown
+        case [.left, .top], [.right, .bottom]: return Self.fallingDiagonal
+        case [.right, .top], [.left, .bottom]: return Self.risingDiagonal
+        default: return .openHand
+        }
+    }
+}
+
 final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
     let id: UUID
     var url: URL
@@ -90,15 +148,15 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
     /// panel opens the menu and a drag moves it; both are handled by this view's own mouse events.
     private let editHint = PanelEditHint()
     private let editBlur = PanelBlurView()
-    /// The back face while the card is flipped to its menu.
-    private var menuFace: NSView?
-    private var menuModel: PanelMenuModel?
+    private(set) var currentMenu: PanelMenuModel?
     private var blurCapture = 0
     private var capturingBlur = false
-    var isShowingMenu: Bool { menuFace != nil }
+    var isShowingMenu: Bool { currentMenu != nil }
     var hasBlurSnapshot: Bool { editBlur.hasSnapshot }
-    var currentMenu: PanelMenuModel? { menuModel }
-    private static weak var openMenuPanel: PanelView?
+    var presentSettings: ((PanelView, PanelMenuModel, NotionTasksModel?, AnyView?) -> Bool)?
+    var dismissSettings: (() -> Void)?
+    var saveWebSettings: ((URL, WebDisplayMode) -> Void)?
+    private var settingsNotion: NotionTasksModel?
     private var hoverArea: NSTrackingArea?
     private var hovering = false { didSet { if hovering != oldValue { updateEditChrome() } } }
     private var clickCandidate = false
@@ -112,7 +170,7 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
     var constrain: ((CGRect) -> CGRect)?
     private var origin = NSPoint.zero
     private var original = NSRect.zero
-    private var edges = 0
+    private var edges: PanelResizeEdges = []
     private var moving = false
     private var sleeping = false
     private var epoch = 0
@@ -224,23 +282,23 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
         }
     }
     func setEditing(_ value: Bool) {
-        editing = value; moving = false; edges = 0
+        editing = value; moving = false; edges = []
         widgetPanel?.setEditing(value)
         (document as? NativeNotePanel)?.setLayoutEditing(value)
         layer?.borderWidth = value ? 3 : 0
         layer?.borderColor = ScrimPalette.nativeBlue.cgColor; needsDisplay = true
         window?.invalidateCursorRects(for: self)
         if let window { hovering = value && bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) }
-        if !value { closeMenu(animated: false) }
+        if !value && isShowingMenu { dismissSettings?() }
         applyVisibility(visibility)
     }
     /// Edit mode only, and not while a widget shows its own settings face: hovering blurs the panel and shows
     /// the menu pill on top; the blur stays while the panel is dragged or resized, and behind the menu face.
     private(set) var editChrome = (pill: false, blur: false)
     private func updateEditChrome() {
-        let available = editing && visibility.showsPanelMenuButton && !(widgetPanel?.isConfiguring ?? false)
-        let menuOpen = menuFace != nil
-        let dragging = (moving && !clickCandidate) || edges != 0
+        let available = editing && visibility.showsPanelMenuButton
+        let menuOpen = isShowingMenu
+        let dragging = (moving && !clickCandidate) || !edges.isEmpty
         let next = (pill: available && !menuOpen && hovering && !dragging,
                     blur: available && (menuOpen || hovering || dragging || clickCandidate))
         editHint.isHidden = !available
@@ -361,6 +419,8 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
             }
             if spec.kind == .notionTasks {
                 widget.model.notion.onOpenPage = browser.openWebLink
+                widget.model.notion.onRequestConfiguration = { [weak self] in self?.showSettings(fromNotion: true) }
+                widget.model.notion.onFinishConfiguration = { [weak self] in self?.dismissSettings?() }
                 // Mapping and saved filters both live in the panel URL.
                 let save = { [weak self, weak widget] in
                     guard let self, let notion = widget?.model.notion, let mapping = notion.mapping else { return }
@@ -504,65 +564,45 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         if url.isFileURL { showFileError() }
     }
-    /// Opens the menu face over the blurred panel: the pill fades away and the face fades in with a slight
-    /// zoom. Nothing turns. `point` is unused; a click anywhere opens it.
-    private func showMenu(at point: NSPoint? = nil) {
-        guard editing, menuFace == nil, !(widgetPanel?.isConfiguring ?? false) else { return }
-        if let open = Self.openMenuPanel, open !== self { open.closeMenu(animated: true) }
-        let model = makeMenuModel()
-        let face = NSHostingView(rootView: PanelMenuFace(model: model).tint(ScrimPalette.blue))
-        face.frame = bounds; face.autoresizingMask = [.width, .height]
-        addSubview(face)
-        menuFace = face; menuModel = model; Self.openMenuPanel = self
-        updateEditChrome()
-        animateFace(face, appearing: true)
-    }
-    /// Back to the content. Without animation when edit mode ends or a widget's settings face takes over.
-    func closeMenu(animated: Bool) {
-        guard let face = menuFace else { return }
-        menuFace = nil; menuModel = nil
-        if Self.openMenuPanel === self { Self.openMenuPanel = nil }
-        updateEditChrome()
-        guard animated else { face.removeFromSuperview(); return }
-        animateFace(face, appearing: false) { face.removeFromSuperview() }
-    }
-    static let faceFadeIn: TimeInterval = 0.2
-    static let faceFadeOut: TimeInterval = 0.16
-    /// Fade plus a 3% zoom around the face's center (fade only with Reduce Motion).
-    private func animateFace(_ face: NSView, appearing: Bool, completion: (() -> Void)? = nil) {
-        face.wantsLayer = true
-        face.alphaValue = appearing ? 0 : 1
-        let duration = appearing ? Self.faceFadeIn : Self.faceFadeOut
-        let timing = CAMediaTimingFunction(name: appearing ? .easeOut : .easeIn)
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = duration; context.timingFunction = timing
-            face.animator().alphaValue = appearing ? 1 : 0
-        }, completionHandler: completion)
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let layer = face.layer else { return }
-        let pivot = (x: face.bounds.width * (0.5 - layer.anchorPoint.x), y: face.bounds.height * (0.5 - layer.anchorPoint.y))
-        func scaled(_ factor: CGFloat) -> CATransform3D {
-            CATransform3DConcat(CATransform3DConcat(CATransform3DMakeTranslation(-pivot.x, -pivot.y, 0), CATransform3DMakeScale(factor, factor, 1)),
-                                CATransform3DMakeTranslation(pivot.x, pivot.y, 0))
-        }
-        let zoom = CABasicAnimation(keyPath: "transform")
-        zoom.fromValue = scaled(appearing ? 0.97 : 1); zoom.toValue = scaled(appearing ? 1 : 0.98)
-        zoom.duration = duration; zoom.timingFunction = timing
-        if !appearing { zoom.fillMode = .forwards; zoom.isRemovedOnCompletion = false }
-        layer.add(zoom, forKey: "menuZoom")
-    }
-    /// The menu face's items: panel-specific settings first, then the shared actions, then removal.
-    private func makeMenuModel() -> PanelMenuModel {
+    private func showMenu() { showSettings() }
+
+    func showSettings(fromNotion: Bool = false) {
+        guard (editing || fromNotion), currentMenu == nil, let presentSettings else { return }
         let spec = WidgetSpec(url: url)
-        var setup: [PanelMenuItem] = []
-        switch spec?.kind {
-        case .worldclock: setup.append(PanelMenuItem(tag: 24, title: "都市と勤務時間を設定…", symbol: "globe"))
-        case .upcoming: setup.append(PanelMenuItem(tag: 22, title: "表示するカレンダーを設定…", symbol: "calendar"))
-        case .notionTasks: setup.append(PanelMenuItem(tag: 26, title: "データベースと列を設定…", symbol: "tablecells"))
-        default: break
+        let notion = spec?.kind == .notionTasks ? widgetPanel?.model.notion : nil
+        guard !fromNotion || notion != nil else { return }
+        let settings: AnyView?
+        if let agenda = widgetPanel?.model.upcoming {
+            settings = AnyView(UpcomingEventsSettings(model: agenda))
+        } else if spec?.kind == .worldclock {
+            settings = AnyView(WorldClockSettings())
+        } else if DefaultBrowser.supports(url) {
+            settings = AnyView(WebPanelSettings(address: url.absoluteString, mode: webDisplayMode) { [weak self] url, mode in
+                self?.saveWebSettings?(url, mode)
+            })
+        } else {
+            settings = nil
         }
-        if WebPanelPolicy.isNotionCalendar(url) { setup.append(PanelMenuItem(tag: 23, title: "今日に戻す", symbol: "calendar.badge.clock")) }
-        if ["https", "http"].contains(url.scheme?.lowercased()) { setup.append(PanelMenuItem(tag: 25, title: "Webパネル設定…", symbol: "safari")) }
+        let menu = makeMenuModel(spec: spec)
+        guard presentSettings(self, menu, notion, settings) else { return }
+        currentMenu = menu
+        settingsNotion = notion
+        notion?.beginConfiguring()
+        updateEditChrome()
+    }
+
+    func endSettings() {
+        currentMenu = nil
+        if settingsNotion?.isConfiguring == true { settingsNotion?.cancelConfiguring() }
+        settingsNotion = nil
+        updateEditChrome()
+    }
+
+    private func makeMenuModel(spec: WidgetSpec?) -> PanelMenuModel {
         var actions = [PanelMenuItem(tag: 0, title: "更新", symbol: "arrow.clockwise")]
+        if WebPanelPolicy.isNotionCalendar(url) {
+            actions.append(PanelMenuItem(tag: 23, title: "今日に戻す", symbol: "calendar.badge.clock"))
+        }
         if canEditContent {
             let title = notes?.files.noteURL(for: url) == nil ? "内容を編集…" : "メモを編集"
             actions.append(PanelMenuItem(tag: 4, title: title, symbol: "square.and.pencil"))
@@ -574,8 +614,8 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
             actions.append(PanelMenuItem(tag: 1, title: title, symbol: "arrow.up.forward.app"))
         }
         actions.append(PanelMenuItem(tag: 2, title: "複製", symbol: "plus.square.on.square"))
-        let title = spec?.title ?? (url.isFileURL ? url.lastPathComponent : url.host ?? url.absoluteString)
-        let model = PanelMenuModel(title: title, setupItems: setup, actions: actions,
+        let title = spec?.title ?? (url.isFileURL ? url.lastPathComponent : web?.title ?? url.host ?? "Webパネル")
+        let model = PanelMenuModel(title: title, actions: actions,
                                    remove: PanelMenuItem(tag: 3, title: "パネルを削除", symbol: "trash", destructive: true),
                                    clockStyle: spec?.kind == .clock ? widgetPanel?.model.clockStyle : nil,
                                    digitalZones: widgetPanel?.model.digitalZones ?? [])
@@ -583,27 +623,20 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
         model.toggleZone = { [weak self, weak model] zone in
             self?.toggleDigitalZone(zone); model?.digitalZones = self?.widgetPanel?.model.digitalZones ?? []
         }
-        model.close = { [weak self] in self?.closeMenu(animated: true) }
+        model.close = { [weak self] in self?.dismissSettings?() }
         return model
     }
-    /// Runs a menu-face item. Clock style stays on the face; settings faces replace it; dialogs and
-    /// actions flip back first; removal needs no flip because the panel goes away.
     func chooseMenuItem(_ tag: Int) {
-        guard editing, menuFace != nil else { return }
-        switch tag {
-        case 20, 21:
+        guard editing, let currentMenu else { return }
+        if tag == 20 || tag == 21 {
             performMenuAction(tag)
-            menuModel?.clockStyle = widgetPanel?.model.clockStyle
-        case 22, 24, 26:
-            closeMenu(animated: false)
-            var transaction = Transaction(); transaction.disablesAnimations = true
-            withTransaction(transaction) { performMenuAction(tag) }
-        case 3: closeMenu(animated: false); performMenuAction(tag)
-        default:
-            closeMenu(animated: true)
+            currentMenu.clockStyle = widgetPanel?.model.clockStyle
+        } else {
+            dismissSettings?()
             performMenuAction(tag)
         }
     }
+
     private var digitalZonesKey: String { "digitalClock.zones." + id.uuidString }
     private func toggleDigitalZone(_ zone: String) {
         guard editing, let model = widgetPanel?.model else { return }
@@ -621,46 +654,43 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
         switch tag {
         case 20: widgetPanel?.model.clockStyle = .analog
         case 21: widgetPanel?.model.clockStyle = .digital
-        case 22: widgetPanel?.model.upcoming?.isConfiguring = true; updateEditChrome()
-        case 24: widgetPanel?.model.configuringWorldClock = true; updateEditChrome()
-        case 26: widgetPanel?.model.notion.beginConfiguring(); updateEditChrome()
         case 23: returnCalendarToToday()
         default: command?(tag)
         }
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard let hit = super.hitTest(point) else { return nil }
+        guard editing else { return super.hitTest(point) }
         let p = convert(point, from: superview)
-        if editing {
-            // The menu face and a widget's own settings face stay interactive (edges still resize);
-            // everywhere else the panel takes the click or drag.
-            if let menuFace, menuFace.frame.insetBy(dx: 8, dy: 8).contains(p) { return menuFace.hitTest(p) ?? menuFace }
-            if let widgetPanel, widgetPanel.allowsControl(at: widgetPanel.convert(p, from: self)) { return widgetPanel.hitTest(p) ?? hit }
-            return self
+        guard !isHidden, bounds.contains(p) else { return nil }
+        return self
+    }
+    private func resizeEdges(at point: NSPoint) -> PanelResizeEdges {
+        // Keep a generous corner target without taking over the middle of small panels.
+        let x = min(point.x - bounds.minX, bounds.maxX - point.x)
+        let y = min(point.y - bounds.minY, bounds.maxY - point.y)
+        let horizontal: PanelResizeEdges = point.x < bounds.midX ? .left : .right
+        let vertical: PanelResizeEdges = point.y < bounds.midY ? .bottom : .top
+        if x < min(24, bounds.width / 3), y < min(24, bounds.height / 3) {
+            return [horizontal, vertical]
         }
-        return hit
+        if x < min(14, bounds.width / 3) { return horizontal }
+        if y < min(14, bounds.height / 3) { return vertical }
+        return []
+    }
+    func editingCursor(at point: NSPoint) -> NSCursor {
+        resizeEdges(at: point).cursor
     }
     override func mouseDown(with event: NSEvent) {
         guard editing else { touched?(); return }
         dropFrame = nil; touched?(); origin = event.locationInWindow; original = frame
-        let p = convert(event.locationInWindow, from: nil)
-        edges = (p.x < 7 ? 1 : 0) | (p.x > bounds.width-7 ? 2 : 0) | (p.y < 7 ? 4 : 0) | (p.y > bounds.height-7 ? 8 : 0)
-        moving = edges == 0
+        edges = resizeEdges(at: convert(event.locationInWindow, from: nil))
+        moving = edges.isEmpty
         clickCandidate = moving
+        updateEditChrome()
     }
     override func rightMouseDown(with event: NSEvent) {
         guard editing else { super.rightMouseDown(with: event); return }
-        touched?(); showMenu(at: convert(event.locationInWindow, from: nil))
-    }
-    override func resetCursorRects() {
-        guard editing else { return }
-        addCursorRect(bounds, cursor: .openHand)
-        for x in [CGFloat(0), bounds.width-7] {
-            addCursorRect(NSRect(x: x, y: 0, width: 7, height: bounds.height), cursor: .resizeLeftRight)
-        }
-        for y in [CGFloat(0), bounds.height-7] {
-            addCursorRect(NSRect(x: 0, y: y, width: bounds.width, height: 7), cursor: .resizeUpDown)
-        }
+        touched?(); showMenu()
     }
     private var dropFrame: CGRect?
     override func mouseDragged(with event: NSEvent) {
@@ -674,12 +704,12 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
         var r = original
         if moving { r.origin.x += dx; r.origin.y += dy }
         else {
-            if edges & 1 != 0 { let d = min(dx, original.width-1); r.origin.x += d; r.size.width -= d }
-            if edges & 2 != 0 { r.size.width = max(1, original.width+dx) }
-            if edges & 4 != 0 { let d = min(dy, original.height-1); r.origin.y += d; r.size.height -= d }
-            if edges & 8 != 0 { r.size.height = max(1, original.height+dy) }
+            if edges.contains(.left) { let d = min(dx, original.width-1); r.origin.x += d; r.size.width -= d }
+            if edges.contains(.right) { r.size.width = max(1, original.width+dx) }
+            if edges.contains(.bottom) { let d = min(dy, original.height-1); r.origin.y += d; r.size.height -= d }
+            if edges.contains(.top) { r.size.height = max(1, original.height+dy) }
         }
-        if moving || edges != 0 {
+        if moving || !edges.isEmpty {
             dropFrame = constrain?(r) ?? r
             layer?.removeAnimation(forKey: "layoutSettle")
             frame = r
@@ -692,10 +722,10 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
         if editing, let dropFrame { settleFrame(dropFrame); changed?() }
         dropFrame = nil
         moving = false
-        edges = 0
+        edges = []
         clickCandidate = false
         updateEditChrome()
-        if click { showMenu(at: convert(event.locationInWindow, from: nil)) }
+        if click { showMenu() }
     }
     deinit { browser.closeAll() }
 
@@ -726,9 +756,9 @@ final class OverlayController {
     private var dialog: OverlayDialogBackdrop?
     private let actionSelection = ActionSelection()
     private weak var embeddedSettings: SettingsController?
-    private var editingWebPanel = false
+    private(set) weak var panelWithSettings: PanelView?
     private var showingGallery = false
-    var showingActions: Bool { dialog != nil && embeddedSettings == nil && !showingGallery && !editingWebPanel }
+    var showingActions: Bool { dialog != nil && embeddedSettings == nil && !showingGallery && panelWithSettings == nil }
     private weak var previousResponder: NSResponder?
     private var galleryDrag: (originals: [UUID: CGRect], marker: NSView)?
     private func clearGalleryDrag() {
@@ -744,13 +774,14 @@ final class OverlayController {
         embeddedSettings?.finishEmbedded()
         embeddedSettings = nil
         showingGallery = false
-        editingWebPanel = false
+        panelWithSettings?.endSettings()
+        panelWithSettings = nil
         dialog.removeFromSuperview()
         self.dialog = nil
         panel.makeFirstResponder(previousResponder ?? root)
         previousResponder = nil
     }
-    private func presentDialog<V: View>(_ content: V, size: NSSize) {
+    private func presentDialog<V: View>(_ content: V, size: NSSize, expandingFrom source: NSRect? = nil) {
         let shield = OverlayDialogBackdrop(frame: root.bounds)
         shield.autoresizingMask = [.width, .height]
         shield.wantsLayer = true
@@ -766,6 +797,47 @@ final class OverlayController {
         root.addSubview(shield, positioned: .above, relativeTo: nil)
         dialog = shield
         panel.makeFirstResponder(shield)
+        if let source {
+            host.wantsLayer = true
+            host.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.24
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                host.animator().alphaValue = 1
+            }
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let layer = host.layer {
+                let scale = max(0.72, min(0.96, source.width / w, source.height / h))
+                let origin = CGPoint(x: source.midX - host.frame.midX, y: source.midY - host.frame.midY)
+                let pivot = CGPoint(x: w * (0.5 - layer.anchorPoint.x), y: h * (0.5 - layer.anchorPoint.y))
+                let transform = CATransform3DMakeAffineTransform(
+                    CGAffineTransform(translationX: origin.x + pivot.x * (1 - scale), y: origin.y + pivot.y * (1 - scale))
+                        .scaledBy(x: scale, y: scale))
+                let animation = CABasicAnimation(keyPath: "transform")
+                animation.fromValue = transform
+                animation.toValue = CATransform3DIdentity
+                animation.duration = 0.24
+                animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                layer.add(animation, forKey: "expandPanelSettings")
+            }
+        }
+    }
+
+    private func presentPanelSettings(_ view: PanelView, menu: PanelMenuModel,
+                                      notion: NotionTasksModel?, settings: AnyView?) -> Bool {
+        guard state == .pinned, dialog == nil, views[view.id] === view else { return false }
+        let hasClockSettings = WidgetSpec(url: view.url)?.kind == .clock
+        let settings = documentStorage.noteURL(for: view.url) == nil ? settings : AnyView(
+            VStack(alignment: .leading, spacing: 8) {
+                PanelTextSizePicker(content: .notes, store: store)
+                Text("すべてのメモに適用されます。").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+        )
+        let size = NSSize(width: 640, height: notion != nil || settings != nil || hasClockSettings ? 540 : 400)
+        panelWithSettings = view
+        presentDialog(PanelMenuFace(model: menu, settings: settings, notion: notion, showsActions: editing, store: store),
+                      size: size, expandingFrom: root.convert(view.bounds, from: view))
+        return true
     }
     func presentSettings(_ controller: SettingsController) {
         closeDialog()
@@ -1273,6 +1345,7 @@ final class OverlayController {
     func setEditing(_ value: Bool) {
         closeDialog()
         editing = value && state == .pinned
+        panel.acceptsMouseMovedEvents = editing
         if !editing { placementPreview = nil }
         root.editing = editing
         for view in views.values {
@@ -1322,6 +1395,17 @@ final class OverlayController {
             self.records[index].url = url; self.persist()
         }
         view.constrain = { [weak self] frame in self?.previewPlacement(record.id, target: frame) ?? frame }
+        view.presentSettings = { [weak self] view, menu, notion, settings in
+            self?.presentPanelSettings(view, menu: menu, notion: notion, settings: settings) ?? false
+        }
+        view.dismissSettings = { [weak self, weak view] in
+            guard let self, self.panelWithSettings === view else { return }
+            self.closeDialog()
+        }
+        view.saveWebSettings = { [weak self] url, mode in
+            self?.closeDialog()
+            self?.updateWebPanel(record.id, url: url, mode: mode)
+        }
         view.command = { [weak self] command in
             guard let self, self.editing, let view = self.views[record.id] else { return }
             switch command {
@@ -1330,14 +1414,6 @@ final class OverlayController {
             case 2:
                 let mode = self.records.first(where: { $0.id == record.id })?.webDisplayMode ?? self.store.webDisplayMode
                 self.add(view.web?.url ?? view.url, mode: mode)
-            case 25:
-                guard let current = self.records.first(where: { $0.id == record.id }) else { return }
-                self.closeDialog()
-                self.editingWebPanel = true
-                self.presentDialog(WebPanelSettings(address: current.url.absoluteString, mode: current.webDisplayMode ?? self.store.webDisplayMode, save: { [weak self] url, mode in
-                    self?.closeDialog()
-                    self?.updateWebPanel(current.id, url: url, mode: mode)
-                }, cancel: { [weak self] in self?.closeDialog() }), size: NSSize(width: 440, height: 205))
             case 4:
                 guard self.documentStorage.owns(view.url) else { return }
                 if self.documentStorage.noteURL(for: view.url) != nil {

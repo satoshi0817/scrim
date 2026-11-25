@@ -62,20 +62,6 @@ public struct NotionTaskMapping: Equatable, Sendable {
     }
 }
 
-/// Text size of Notion task panels (list and opened task), set in Settings.
-public enum NotionTextSize: String, CaseIterable, Codable, Sendable {
-    case small, standard, large, extraLarge
-    public var title: String {
-        switch self { case .small: return "小"; case .standard: return "標準"; case .large: return "大"; case .extraLarge: return "特大" }
-    }
-    /// Task names in the list and the opened task's title.
-    public var task: Double { switch self { case .small: return 13; case .standard: return 15; case .large: return 17; case .extraLarge: return 20 } }
-    /// Due dates, assignees and other secondary lines.
-    public var detail: Double { switch self { case .small: return 11; case .standard: return 12; case .large: return 13; case .extraLarge: return 15 } }
-    /// Page content of an opened task.
-    public var body: Double { switch self { case .small: return 13; case .standard: return 14; case .large: return 16; case .extraLarge: return 18 } }
-}
-
 /// One value of a status, select, multi-select or people property on a task.
 public struct NotionChoice: Equatable, Hashable, Sendable, Identifiable {
     public var id: String

@@ -369,6 +369,38 @@ private func verifyNoteEditing(in directory: URL) throws {
             saved.attribute(.underlineStyle, at: editor.selectedRange().location, effectiveRange: nil) as? Int == NSUnderlineStyle.single.rawValue &&
             list(at: "卵", in: saved)?.isOrdered == true
     }
+    try MainActor.assumeIsolated {
+        let storage = MemorySettingsStorage()
+        let store = SettingsStore(storage: storage)
+        let appearance = PanelTextAppearance.shared
+        defer { appearance.setNoteSize(.standard, in: store); appearance.setNotionSize(.standard, in: store) }
+        let scroll = try (editor.enclosingScrollView).unwrap("Missing note scroll view")
+        let selection = editor.selectedRange()
+        let content = NSAttributedString(attributedString: memo.note.text)
+        let saved = try Data(contentsOf: panel.url)
+        let defaultSize = PanelTextSize.standard
+        try check(store.noteTextSize == defaultSize && store.notionTextSize == defaultSize &&
+                  defaultSize.noteMagnification == 1 && defaultSize.task == 15 && defaultSize.detail == 12 && defaultSize.body == 14,
+                  "Medium must keep the previous note and task sizes")
+        for size in PanelTextSize.allCases {
+            appearance.setNoteSize(size, in: store)
+            memo.layoutSubtreeIfNeeded()
+            try check(abs(scroll.magnification - size.noteMagnification) < 0.001 &&
+                      abs(editor.frame.width - scroll.contentView.bounds.width) < 1,
+                      "Note size \(size) must wrap within the visible editor: magnification \(scroll.magnification), width \(editor.frame.width), viewport \(scroll.contentView.bounds.width)")
+            try check(editor.selectedRange() == selection && memo.note.text.isEqual(to: content),
+                      "Changing note size must preserve the selection and every rich-text attribute")
+        }
+        appearance.setNotionSize(.extraSmall, in: store)
+        let restored = SettingsStore(storage: storage)
+        let data = try Data(contentsOf: panel.url)
+        try check(restored.noteTextSize == .extraLarge && restored.notionTextSize == .extraSmall && data == saved,
+                  "Note and task sizes must persist independently; the RTF must stay intact")
+        restored.notionTextSize = .large
+        appearance.load(from: restored)
+        try check(appearance.notionSize == .large && appearance.noteSize == .extraLarge,
+                  "Loading preferences must retain existing task size selections")
+    }
     controller.setEditing(true)
     try check(!editor.isEditable && controller.panel.firstResponder !== editor, "Moving a panel must release text input")
     panel.command?(2)
@@ -801,12 +833,11 @@ private struct FixtureWeather: WeatherProviding {
     agendaModel.editExcludedKeyword(persistedKeyword, text: "除外する予定")
     let agendaRecord = try store.panels.first(where: { WidgetSpec(url: $0.url)?.kind == .upcoming }).unwrap("Missing saved agenda")
     try check(WidgetSpec(url: agendaRecord.url)?.calendarIDs == chosen && WidgetSpec(url: agendaRecord.url)?.agendaDays == 14 && WidgetSpec(url: agendaRecord.url)?.excludedKeywords == ["除外する予定"], "Calendar filter, day count and keywords must persist together on the panel")
-    agenda.superview?.layoutSubtreeIfNeeded()
-    agenda.layoutSubtreeIfNeeded()
-    (agenda.superview as? PanelView)?.performMenuAction(22)
-    try check(agenda.allowsControl(at: NSPoint(x: agenda.bounds.midX, y: agenda.bounds.midY)), "Settings face must allow controls through edit-mode hit testing")
+    let agendaPanel = try (agenda.superview as? PanelView).unwrap("Missing agenda panel")
+    agendaPanel.showSettings()
+    try check(controller.panelWithSettings === agendaPanel, "Agenda settings must open in the centered overlay")
     controller.setEditing(false)
-    try check(!agendaModel.isConfiguring && !agenda.model.isEditing, "Leaving edit mode must return to agenda face")
+    try check(controller.panelWithSettings == nil && !agenda.model.isEditing, "Leaving edit mode must close agenda settings")
     controller.setEditing(true)
     let weather = try widgets.first(where: { $0.model.spec.kind == .weather }).unwrap("Missing weather widget")
     let deadline = Date().addingTimeInterval(5)
@@ -895,19 +926,13 @@ private struct FixtureWeather: WeatherProviding {
     reviewWindow.orderOut(nil)
     let reviewKeyword = filtered.addExcludedKeyword()
     filtered.editExcludedKeyword(reviewKeyword, text: "非表示にしたい予定")
-    filtered.isConfiguring = false
-    let back = NSHostingView(rootView: UpcomingEventsView(model: filtered, now: Date(), size: CGSize(width: 340, height: 420), editing: true))
-    back.frame = NSRect(x: 0, y: 0, width: 340, height: 420)
-    reviewWindow.setContentSize(NSSize(width: 340, height: 420))
+    let back = NSHostingView(rootView: PanelSettingsSurface(title: "次の予定", close: {}) {
+        UpcomingEventsSettings(model: filtered)
+    })
+    back.frame = NSRect(x: 0, y: 0, width: 640, height: 540)
+    reviewWindow.setContentSize(NSSize(width: 640, height: 540))
     reviewWindow.contentView = back; reviewWindow.orderFront(nil); back.layoutSubtreeIfNeeded()
     try await Task.sleep(nanoseconds: 100_000_000)
-    filtered.isConfiguring = true
-    try await Task.sleep(nanoseconds: 180_000_000)
-    if let bitmap = back.bitmapImageRepForCachingDisplay(in: back.bounds) {
-        back.cacheDisplay(in: back.bounds, to: bitmap)
-        try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: ".tmp/upcoming-flip-review.png"))
-    }
-    try await Task.sleep(nanoseconds: 350_000_000)
     if let bitmap = back.bitmapImageRepForCachingDisplay(in: back.bounds) {
         back.cacheDisplay(in: back.bounds, to: bitmap)
         try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: ".tmp/upcoming-settings-review.png"))
@@ -1249,6 +1274,7 @@ func verifyPanelBehavior() throws {
 /// switch clock style in place, open a widget's settings face directly, and duplicate the panel.
 /// The panel handles these mouse events itself, so they are sent to it directly (no live pointer needed).
 @MainActor func verifyPanelMenuClicks() throws {
+    try verifyPanelResize()
     func hints(_ view: NSView) -> [PanelEditHint] { (view as? PanelEditHint).map { [$0] } ?? view.subviews.flatMap(hints) }
     for shared in [true, false] {
         let store = SettingsStore(storage: MemorySettingsStorage())
@@ -1283,7 +1309,7 @@ func verifyPanelBehavior() throws {
                                           windowNumber: controller.panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
             }
             func closeMenu() throws {
-                view.closeMenu(animated: true)
+                controller.closeDialog()
                 try waitFor("menu closes: " + name) { !view.isShowingMenu }
                 RunLoop.current.run(until: Date().addingTimeInterval(0.3))
             }
@@ -1293,7 +1319,15 @@ func verifyPanelBehavior() throws {
             try waitFor("menu face from click: " + name) { view.isShowingMenu }
             try check(view.frame == before, "A click with a little jitter must not move the panel: " + name)
             try check(view.editChrome == (pill: false, blur: true), "The menu face replaces the pill and keeps the blur behind it: " + name)
-            try check(root.hitTest(NSPoint(x: view.frame.midX, y: view.frame.midY)) !== view, "The menu face must take its own clicks: " + name)
+            let shield = try root.subviews.compactMap { $0 as? OverlayDialogBackdrop }.first.unwrap("Missing settings backdrop")
+            let host = try shield.dialogContent.unwrap("Missing centered panel settings")
+            try check(host.superview === shield && controller.panelWithSettings === view
+                        && abs(host.frame.midX - root.bounds.midX) < 1
+                        && abs(host.frame.midY - root.bounds.midY) < 1
+                        && view.currentMenu?.title == WidgetSpec(url: view.url)?.title,
+                      "Panel settings must open at screen center and identify the current panel: " + name)
+            try check(root.hitTest(NSPoint(x: view.frame.midX, y: view.frame.midY)) !== view,
+                      "The settings overlay must take clicks: " + name)
             try closeMenu()
             view.mouseDown(with: event(.leftMouseDown)); view.mouseDragged(with: event(.leftMouseDragged, 60))
             let dragging = view.frame
@@ -1331,15 +1365,14 @@ func verifyPanelBehavior() throws {
         let zone = "Europe/Paris"
         clock.currentMenu?.toggleZone(zone)
         try check(clock.currentMenu?.digitalZones.contains(zone) == true, "Time zones must toggle from the menu face")
-        clock.closeMenu(animated: false)
+        controller.closeDialog()
         let agenda = try panel(.upcoming)
         try open(agenda)
-        agenda.chooseMenuItem(22)
-        guard let agendaWidget = agenda.subviews.compactMap({ $0 as? NativeWidgetPanel }).first else { throw CheckError.failed("Missing agenda widget") }
-        try check(!agenda.isShowingMenu && agendaWidget.model.upcoming?.isConfiguring == true, "Calendar settings must replace the menu face")
-        try check(hints(agenda).first?.isHidden == true, "The pill must hide while a widget shows its settings")
-        try check(root.hitTest(NSPoint(x: agenda.frame.midX, y: agenda.frame.midY)) !== agenda, "Settings faces must keep their own clicks")
-        agendaWidget.model.upcoming?.isConfiguring = false
+        let host = try root.subviews.compactMap { $0 as? OverlayDialogBackdrop }.first?.dialogContent
+            .unwrap("Missing centered calendar settings")
+        try check(controller.panelWithSettings === agenda && (host?.frame.width ?? 0) >= min(640, root.bounds.width - 24),
+                  "Calendar settings must use the screen width even on a small panel")
+        controller.closeDialog()
         let count = controller.records.count
         let calculator = try panel(.calculator)
         try open(calculator)
@@ -1347,7 +1380,58 @@ func verifyPanelBehavior() throws {
         try check(controller.records.count == count + 1, "Duplicate must add a panel")
         try waitFor("menu closes after an action") { !calculator.isShowingMenu }
     }
-    print("PASS: edit-mode panel menu: hover blur + pill, click/right-click/accessibility open the menu face over the blur, drag without menu, jitter tolerance, clock style and zones in place, settings face handoff, duplicate (shared and per-display layouts)")
+    print("PASS: centered panel settings and title, hover blur and pill, click/right-click/accessibility, drag without opening settings, clock style and zones, calendar settings, duplicate (shared and per-display layouts)")
+}
+
+@MainActor private func verifyPanelResize() throws {
+    let store = SettingsStore(storage: MemorySettingsStorage())
+    let controller = OverlayController(store: store, websiteDataStore: .nonPersistent())
+    controller.show(.pinned, immediately: true)
+    defer { controller.show(.hidden, immediately: true) }
+    controller.setEditing(true)
+    controller.add(WidgetSpec(kind: .calculator).url)
+    let view = try controller.views.values.first.unwrap("Missing resize panel")
+    let grid = PanelGrid(screen: controller.root.bounds.size)
+    let original = grid.frame(column: 4, row: 3, columns: 3, rows: 2)
+    let dx = grid.step.width, dy = grid.step.height
+    let locations: [(column: Int, row: Int)] = [
+        (0, 0), (0, 2), (2, 0), (2, 2), (0, 1), (2, 1), (1, 0), (1, 2), (1, 1)
+    ]
+    for (column, row) in locations {
+        view.frame = original
+        view.layoutSubtreeIfNeeded()
+        let corner = column != 1 && row != 1
+        let inset: CGFloat = corner ? 20 : 11
+        let x = [inset, view.bounds.midX, view.bounds.maxX - inset][column]
+        let y = [inset, view.bounds.midY, view.bounds.maxY - inset][row]
+        let start = view.convert(NSPoint(x: x, y: y), to: nil)
+        let end = NSPoint(x: start.x + (column == 0 ? -dx : dx), y: start.y + (row == 0 ? -dy : dy))
+        func event(_ type: NSEvent.EventType, at location: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: controller.panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        NSCursor.iBeam.set()
+        controller.panel.sendEvent(event(.mouseMoved, at: start))
+        let cursor = NSCursor.current
+        try check(cursor !== NSCursor.iBeam && (cursor === NSCursor.openHand) == (column == 1 && row == 1),
+                  "Edit-mode pointer must match the resize or move region")
+        if #available(macOS 15.0, *), corner {
+            let positions: [[NSCursor.FrameResizePosition]] = [[.bottomLeft, .topLeft], [.bottomRight, .topRight]]
+            let expected = NSCursor.frameResize(position: positions[column / 2][row / 2], directions: .all)
+            try check(cursor.image.tiffRepresentation == expected.image.tiffRepresentation,
+                      "All four corners must show the matching diagonal cursor")
+        }
+        view.mouseDown(with: event(.leftMouseDown, at: start))
+        view.mouseDragged(with: event(.leftMouseDragged, at: end))
+        view.mouseUp(with: event(.leftMouseUp, at: end))
+        let expectedColumn = column == 0 ? 3 : column == 1 && row == 1 ? 5 : 4
+        let expectedRow = row == 0 ? 2 : column == 1 && row == 1 ? 4 : 3
+        let expected = grid.frame(column: expectedColumn, row: expectedRow,
+                                  columns: column == 1 ? 3 : 4, rows: row == 1 ? 2 : 3)
+        try check(view.frame.equalTo(expected), "Drag must move or resize the intended edges and snap to the grid")
+    }
+    NSCursor.arrow.set()
+    print("PASS: eight resize targets, diagonal cursors, center drag and grid snapping")
 }
 
 /// Hidden overlays free their web pages (idle release and memory pressure use this path); the next show reloads them.

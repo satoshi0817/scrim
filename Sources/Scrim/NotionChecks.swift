@@ -28,11 +28,18 @@ private func fixtureBlocks(_ base: URL) throws -> [String: [String: Any]] { try 
 /// With SCRIM_NOTION_SNAPSHOTS=<directory>, saves light and dark PNGs of a panel state for visual review.
 @MainActor private func snapshot(_ model: NotionTasksModel, _ name: String, editing: Bool = false) throws {
     guard let directory = ProcessInfo.processInfo.environment["SCRIM_NOTION_SNAPSHOTS"] else { return }
-    let size = CGSize(width: 420, height: 460)
+    let size = CGSize(width: model.isConfiguring ? 640 : 420, height: model.isConfiguring ? 540 : 460)
     for dark in [false, true] {
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-        let content = NotionTasksView(model: model, now: Date(), size: size, editing: editing)
-            .tint(ScrimPalette.blue).frame(width: size.width, height: size.height)
+        let view: AnyView
+        if model.isConfiguring {
+            view = AnyView(PanelSettingsSurface(title: "Notionタスク", close: {}) {
+                NotionTasksSetupView(model: model)
+            })
+        } else {
+            view = AnyView(NotionTasksView(model: model, now: Date(), size: size, editing: editing))
+        }
+        let content = view.tint(ScrimPalette.blue).frame(width: size.width, height: size.height)
             .background(Color(nsColor: .windowBackgroundColor))
         let host = NSHostingView(rootView: content)
         host.frame = CGRect(origin: .zero, size: size); host.appearance = appearance
@@ -99,10 +106,23 @@ private func resetFixture(_ base: URL) throws {
         controller.setEditing(true)
         let hint = try XCTUnwrapCheck(panel.subviews.compactMap { $0 as? PanelEditHint }.first, "task panel menu control")
         try check(hint.accessibilityPerformPress(), "The task panel menu must open from edit mode")
-        let menu = try XCTUnwrapCheck(panel.currentMenu, "task panel menu")
-        let setup = try XCTUnwrapCheck(menu.setupItems.first, "database configuration item")
-        menu.choose(setup.tag)
-        try check(widget.model.notion.isConfiguring && !panel.isShowingMenu, "The database menu item must open task setup")
+        try check(widget.model.notion.isConfiguring && controller.panelWithSettings === panel,
+                  "The edit-mode entry must open the centered Notion settings")
+        try waitFor("saved mapping tab") { widget.model.notion.step == .mapColumns }
+        widget.model.notion.selectSetupTab(.chooseSource)
+        try waitFor("direct database tab") { !widget.model.notion.searching && !widget.model.notion.searchResults.isEmpty }
+        widget.model.notion.selectSetupTab(.mapColumns)
+        try check(widget.model.notion.draft == saved, "Switching back to the columns tab must preserve the draft")
+        controller.closeDialog()
+        try check(!widget.model.notion.isConfiguring, "Closing the overlay must cancel setup")
+        controller.setEditing(false)
+        widget.model.notion.onRequestConfiguration?()
+        try check(controller.panelWithSettings === panel && widget.model.notion.isConfiguring,
+                  "The task list's setup button must use the same centered dialog")
+        try waitFor("normal-mode mapping tab") { widget.model.notion.step == .mapColumns }
+        widget.model.notion.finishConfiguring()
+        try check(controller.panelWithSettings == nil, "Saving columns must close normal-mode setup")
+
     }
 
     // Add, complete with undo, complete for real, edit.

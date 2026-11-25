@@ -151,11 +151,6 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
     func setAgendaResetsScrollOnOpen(_ value: Bool) { store.agendaResetsScrollOnOpen = value; changed?(); refresh() }
     func setPeekInteraction(_ value: Bool) { store.peekAllowsInteraction = value; changed?(); gestureChanged?(); refresh() }
     func setReleasesIdleWebPanels(_ value: Bool) { store.releasesIdleWebPanels = value; refresh() }
-    func setNotionTextSize(_ value: NotionTextSize) {
-        store.notionTextSize = value
-        MainActor.assumeIsolated { NotionAppearance.shared.textSize = value }
-        refresh()
-    }
     func setCalendarReturnsToToday(_ value: Bool) { store.calendarReturnsToToday = value; changed?(); refresh() }
     func setSameLayout(_ value: Bool) { store.setSameLayoutOnAllDisplays(value); changed?(); refresh() }
     struct DisplayChoice: Identifiable { let id: String; let name: String }

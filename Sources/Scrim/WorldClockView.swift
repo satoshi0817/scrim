@@ -54,31 +54,28 @@ struct WorkCity: Identifiable, Codable {
     }
 }
 
+private extension WorkCity {
+    static func savedCities(from data: Data) -> [WorkCity] {
+        guard let cities = try? JSONDecoder().decode([WorkCity].self, from: data), !cities.isEmpty else { return initial }
+        return cities
+    }
+}
+
 struct WorldClockView: View {
     let now: Date
-    @Binding var configuring: Bool
     @AppStorage("worldClockWorkCities.v1") private var saved = Data()
     @State private var selection: Date?
-    private var cities: [WorkCity] {
-        guard let result = try? JSONDecoder().decode([WorkCity].self, from: saved), !result.isEmpty else { return WorkCity.initial }
-        return result
-    }
-    private func store(_ values: [WorkCity]) {
-        if let data = try? JSONEncoder().encode(values) { saved = data }
-    }
+    private var cities: [WorkCity] { WorkCity.savedCities(from: saved) }
     private var instant: Date { selection ?? now }
     private var day: DateInterval { Calendar.current.dateInterval(of: .day, for: instant)! }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label(configuring ? "都市と勤務時間" : "世界時計", systemImage: "globe").font(.headline)
+                Label("世界時計", systemImage: "globe").font(.headline)
                 Spacer()
-                if configuring { Button("完了") { configuring = false }.padding(.trailing, 28) }
-                else {
-                    Button { copyTimes() } label: { Image(systemName: "doc.on.doc") }.help("各地の日時をコピー")
-                }
+                Button { copyTimes() } label: { Image(systemName: "doc.on.doc") }.help("各地の日時をコピー")
             }
-            if configuring { settings } else { clocks }
+            clocks
         }.buttonStyle(.borderless)
     }
     private var clocks: some View {
@@ -144,7 +141,18 @@ struct WorldClockView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
-    private var settings: some View {
+}
+
+struct WorldClockSettings: View {
+    @AppStorage("worldClockWorkCities.v1") private var saved = Data()
+    @State private var query = ""
+    private var cities: [WorkCity] { WorkCity.savedCities(from: saved) }
+
+    private func store(_ values: [WorkCity]) {
+        if let data = try? JSONEncoder().encode(values) { saved = data }
+    }
+
+    var body: some View {
         let rows = cities
         let selectedIDs = Set(rows.map(\.id))
         return ScrollView {
@@ -160,19 +168,29 @@ struct WorldClockView: View {
                         HStack { hourPicker(city, start: true); Text("–"); hourPicker(city, start: false) }
                     }
                 }
-                Menu("都市を追加") {
-                    ForEach(WorkCity.names.keys.sorted(), id: \.self) { id in
-                        if !selectedIDs.contains(id) { Button(WorkCity(id: id).name) { store(cities + [WorkCity(id: id)]) } }
+                Divider()
+                TextField("追加する都市・タイムゾーンを検索", text: $query).textFieldStyle(.roundedBorder)
+                ForEach(availableCities(excluding: selectedIDs), id: \.self) { id in
+                    Button {
+                        store(cities + [WorkCity(id: id)])
+                        query = ""
+                    } label: {
+                        Label(WorkCity(id: id).name, systemImage: "plus")
                     }
-                    Menu("その他のタイムゾーン") {
-                        ForEach(TimeZone.knownTimeZoneIdentifiers.filter { $0.contains("/") && WorkCity.names[$0] == nil && !selectedIDs.contains($0) }, id: \.self) { id in
-                            Button(id) { store(cities + [WorkCity(id: id)]) }
-                        }
-                    }
+                    .buttonStyle(.borderless)
                 }
             }
         }
     }
+    private func availableCities(excluding selected: Set<String>) -> [String] {
+        let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidates = search.isEmpty ? WorkCity.names.keys.sorted() : TimeZone.knownTimeZoneIdentifiers
+        return Array(candidates.lazy.filter {
+            !selected.contains($0) && (search.isEmpty || $0.localizedStandardContains(search)
+                                     || WorkCity(id: $0).name.localizedStandardContains(search))
+        }.prefix(30))
+    }
+
     private func hourPicker(_ city: WorkCity, start: Bool) -> some View {
         Picker(start ? "開始" : "終了", selection: Binding(get: { start ? city.start : city.end }, set: { hour in
             var values = cities

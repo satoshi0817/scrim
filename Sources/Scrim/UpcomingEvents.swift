@@ -109,7 +109,6 @@ enum AgendaPresentation {
     @Published private(set) var displayDays: Int
     @Published private(set) var keywordRows: [ExcludedKeywordRow]
     var excludedKeywords: [String] { EventExclusion.normalized(keywordRows.map(\.text)) }
-    @Published var isConfiguring = false
     @Published private(set) var presentationRevision = 0
     var onOpenLink: ((URL) -> Void)?
     var onOpenMeeting: ((URL) -> Void)?
@@ -215,23 +214,10 @@ struct UpcomingEventsView: View {
     let size: CGSize
     var editing = false
     @State private var expandedEvents: Set<String> = []
-    @FocusState private var focusedKeyword: UUID?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var compact: Bool { size.width < 300 || size.height < 260 }
-    var body: some View {
-        ZStack {
-            front
-                .modifier(CalendarCardFace(hidden: model.isConfiguring ? 1 : 0, motion: !reduceMotion))
-                .allowsHitTesting(!model.isConfiguring)
-                .accessibilityHidden(model.isConfiguring)
-            configuration
-                .modifier(CalendarCardFace(hidden: model.isConfiguring ? 0 : 1, motion: !reduceMotion))
-                .allowsHitTesting(model.isConfiguring)
-                .accessibilityHidden(!model.isConfiguring)
-        }
-        .animation(.easeInOut(duration: reduceMotion ? 0.15 : 0.22), value: model.isConfiguring)
-    }
+    var body: some View { front }
     private var front: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
@@ -318,84 +304,6 @@ struct UpcomingEventsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(compact ? 16 : 24)
         .background(Color(nsColor: .windowBackgroundColor))
-    }
-    private var configuration: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("表示する予定").font(.headline)
-                Spacer(minLength: 0)
-                Button("完了") { focusedKeyword = nil; model.isConfiguring = false }.buttonStyle(.borderedProminent).controlSize(.small)
-            }.padding(.trailing, 32).frame(height: 24)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Stepper(value: Binding(get: { model.displayDays }, set: model.setDisplayDays), in: 1...31) {
-                            Text("表示期間：\(model.displayDays)日間").font(.callout)
-                        }
-                        Text("今日を含めた日数").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Divider()
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("除外キーワード").font(.system(size: 13, weight: .semibold))
-                        Text("予定名にどれかが含まれる予定を非表示にします。大文字・小文字は区別しません。")
-                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        ForEach(model.keywordRows) { row in
-                            HStack(spacing: 6) {
-                                TextField("キーワード", text: Binding(get: { model.keywordRows.first(where: { $0.id == row.id })?.text ?? "" },
-                                                                     set: { model.editExcludedKeyword(row.id, text: $0) }))
-                                    .textFieldStyle(.roundedBorder).focused($focusedKeyword, equals: row.id)
-                                Button { model.removeExcludedKeyword(row.id) } label: { Image(systemName: "trash") }
-                                    .buttonStyle(.borderless).help("このキーワードを削除")
-                                    .accessibilityLabel("キーワードを削除")
-                            }
-                        }
-                        Button { focusedKeyword = model.addExcludedKeyword() } label: { Label("キーワードを追加", systemImage: "plus") }
-                            .buttonStyle(.borderless).font(.caption)
-                    }
-                    Divider()
-                    Text("アカウント・カレンダーを選択").font(.caption).foregroundStyle(.secondary)
-                    if model.status == .fullAccess {
-                        HStack {
-                            Button("すべて") { model.select(nil) }
-                            Button("選択を解除") { model.select([]) }
-                        }.buttonStyle(.borderless).font(.caption)
-                        if model.calendars.isEmpty {
-                            Text("利用できるカレンダーがありません").font(.callout).foregroundStyle(.secondary)
-                        } else {
-                            ForEach(accountIDs, id: \.self) { accountID in
-                                let options = model.calendars.filter { $0.accountID == accountID }
-                                let ids = options.map(\.id)
-                                VStack(alignment: .leading, spacing: 9) {
-                                    Toggle(isOn: Binding(get: { ids.allSatisfy(model.isSelected) }, set: { model.setSelected(ids, enabled: $0) })) {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(options.first?.accountTitle ?? "カレンダー").font(.system(size: 13, weight: .semibold))
-                                            Text("\(ids.filter(model.isSelected).count) / \(ids.count)個を表示").font(.caption2).foregroundStyle(.secondary)
-                                        }
-                                    }.toggleStyle(.switch)
-                                    ForEach(options) { option in
-                                        Toggle(isOn: Binding(get: { model.isSelected(option.id) }, set: { model.setSelected([option.id], enabled: $0) })) {
-                                            HStack(spacing: 6) {
-                                                Circle().fill(Color(nsColor: option.color)).frame(width: 7, height: 7)
-                                                Text(option.title).font(.system(size: 12)).lineLimit(2)
-                                            }
-                                        }.toggleStyle(.switch).controlSize(.small).padding(.leading, 12)
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        Text("予定の表示面でカレンダーへのアクセスを許可してください。").font(.callout).foregroundStyle(.secondary)
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 8)
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(compact ? 16 : 24)
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-    private var accountIDs: [String] {
-        var seen: Set<String> = []
-        return model.calendars.compactMap { seen.insert($0.accountID).inserted ? $0.accountID : nil }
     }
     private func agendaNavigation(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -573,21 +481,78 @@ struct UpcomingEventsView: View {
     }
 }
 
-
-/// Switches between the agenda and its settings with a soft cross-fade, matching panel menus: the outgoing
-/// face fades, blurs and shrinks slightly while the other fades in. Nothing turns. Fade only with Reduce Motion.
-private struct CalendarCardFace: AnimatableModifier {
-    /// 0 while this face is shown, 1 while hidden.
-    var hidden: Double
-    var motion: Bool
-    var animatableData: Double { get { hidden } set { hidden = newValue } }
-    func body(content: Content) -> some View {
-        content.opacity(1 - hidden)
-            .scaleEffect(motion ? 1 - 0.03 * hidden : 1)
-            .blur(radius: motion ? 6 * hidden : 0)
+struct UpcomingEventsSettings: View {
+    @ObservedObject var model: UpcomingEventsModel
+    @FocusState private var focusedKeyword: UUID?
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Stepper(value: Binding(get: { model.displayDays }, set: model.setDisplayDays), in: 1...31) {
+                        Text("表示期間：\(model.displayDays)日間").font(.callout)
+                    }
+                    Text("今日を含めた日数").font(.caption2).foregroundStyle(.secondary)
+                }
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("除外キーワード").font(.system(size: 13, weight: .semibold))
+                    Text("予定名にどれかが含まれる予定を非表示にします。大文字・小文字は区別しません。")
+                        .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    ForEach(model.keywordRows) { row in
+                        HStack(spacing: 6) {
+                            TextField("キーワード", text: Binding(get: { model.keywordRows.first(where: { $0.id == row.id })?.text ?? "" },
+                                                                 set: { model.editExcludedKeyword(row.id, text: $0) }))
+                                .textFieldStyle(.roundedBorder).focused($focusedKeyword, equals: row.id)
+                            Button { model.removeExcludedKeyword(row.id) } label: { Image(systemName: "trash") }
+                                .buttonStyle(.borderless).help("このキーワードを削除")
+                                .accessibilityLabel("キーワードを削除")
+                        }
+                    }
+                    Button { focusedKeyword = model.addExcludedKeyword() } label: { Label("キーワードを追加", systemImage: "plus") }
+                        .buttonStyle(.borderless).font(.caption)
+                }
+                Divider()
+                Text("アカウント・カレンダーを選択").font(.caption).foregroundStyle(.secondary)
+                if model.status == .fullAccess {
+                    HStack {
+                        Button("すべて") { model.select(nil) }
+                        Button("選択を解除") { model.select([]) }
+                    }.buttonStyle(.borderless).font(.caption)
+                    if model.calendars.isEmpty {
+                        Text("利用できるカレンダーがありません").font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(accountIDs, id: \.self) { accountID in
+                            let options = model.calendars.filter { $0.accountID == accountID }
+                            let ids = options.map(\.id)
+                            VStack(alignment: .leading, spacing: 9) {
+                                Toggle(isOn: Binding(get: { ids.allSatisfy(model.isSelected) }, set: { model.setSelected(ids, enabled: $0) })) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(options.first?.accountTitle ?? "カレンダー").font(.system(size: 13, weight: .semibold))
+                                        Text("\(ids.filter(model.isSelected).count) / \(ids.count)個を表示").font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }.toggleStyle(.switch)
+                                ForEach(options) { option in
+                                    Toggle(isOn: Binding(get: { model.isSelected(option.id) }, set: { model.setSelected([option.id], enabled: $0) })) {
+                                        HStack(spacing: 6) {
+                                            Circle().fill(Color(nsColor: option.color)).frame(width: 7, height: 7)
+                                            Text(option.title).font(.system(size: 12)).lineLimit(2)
+                                        }
+                                    }.toggleStyle(.switch).controlSize(.small).padding(.leading, 12)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Text("予定の表示面でカレンダーへのアクセスを許可してください。").font(.callout).foregroundStyle(.secondary)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 8)
+        }
+    }
+    private var accountIDs: [String] {
+        var seen: Set<String> = []
+        return model.calendars.compactMap { seen.insert($0.accountID).inserted ? $0.accountID : nil }
     }
 }
-
 
 private struct HandCursor: ViewModifier {
     @State private var hovering = false

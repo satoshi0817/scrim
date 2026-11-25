@@ -13,7 +13,6 @@ import ScrimCore
     var onClockStyleChange: ((ClockStyle) -> Void)?
     let spec: WidgetSpec
     @Published var digitalZones = [TimeZone.current.identifier]
-    @Published var configuringWorldClock = false
     @Published var now = Date()
     @Published var monthOffset = 0
     @Published var weather: WeatherSnapshot?
@@ -111,19 +110,7 @@ final class NativeWidgetPanel: NSHostingView<WidgetPanelView> {
     required init?(coder: NSCoder) { fatalError() }
     func setActive(_ value: Bool) { model.setActive(value) }
     func reload() { model.refresh(force: true) }
-    func setEditing(_ value: Bool) {
-        model.isEditing = value
-        if !value { model.configuringWorldClock = false; model.upcoming?.isConfiguring = false }
-    }
-    /// True while the widget shows its own settings face, which takes clicks even in edit mode.
-    var isConfiguring: Bool {
-        model.configuringWorldClock || model.upcoming?.isConfiguring == true
-            || (model.spec.kind == .notionTasks && model.notion.isConfiguring)
-    }
-    func allowsControl(at point: NSPoint) -> Bool {
-        guard model.isEditing else { return false }
-        return isConfiguring && bounds.insetBy(dx: 8, dy: 8).contains(point)
-    }
+    func setEditing(_ value: Bool) { model.isEditing = value }
 }
 
 struct WidgetPanelView: View {
@@ -142,7 +129,7 @@ struct WidgetPanelView: View {
                             return .handled
                         })
                 case .calculator: CalculatorWidget()
-                case .worldclock: WorldClockView(now: model.now, configuring: $model.configuringWorldClock)
+                case .worldclock: WorldClockView(now: model.now)
                 case .clock: clock(size: geometry.size)
                 case .calendar: calendar(size: geometry.size)
                 case .upcoming:

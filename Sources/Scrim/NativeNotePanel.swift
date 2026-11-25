@@ -1,4 +1,6 @@
 import AppKit
+import Combine
+import ScrimCore
 
 enum NoteFormat: Int, CaseIterable {
     case bold, underline, bullets, numbers
@@ -72,6 +74,7 @@ final class NativeNotePanel: NSView, NSTextViewDelegate {
     private let scroll = NSScrollView()
     private var buttons: [NSButton] = []
     private let retry = NSButton()
+    private var textSizeObservation: AnyCancellable?
 
     init(note: PanelNote, notes: PanelNotes, openWebLink: @escaping (URL) -> Void) {
         self.note = note
@@ -94,13 +97,19 @@ final class NativeNotePanel: NSView, NSTextViewDelegate {
         editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         editor.isVerticallyResizable = true
         editor.isHorizontallyResizable = false
-        editor.autoresizingMask = .width
         container.widthTracksTextView = true
-        if note.text.length == 0 { editor.typingAttributes = [.font: NSFont.systemFont(ofSize: 14)] }
+        if note.text.length == 0 { editor.typingAttributes = [.font: NSFont.systemFont(ofSize: PanelTextSize.standardNotePointSize)] }
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
+        scroll.minMagnification = PanelTextSize.extraSmall.noteMagnification
+        scroll.maxMagnification = PanelTextSize.extraLarge.noteMagnification
         scroll.documentView = editor
         addSubview(scroll)
+        textSizeObservation = PanelTextAppearance.shared.$noteSize.removeDuplicates().sink { [weak self] size in
+            guard let self else { return }
+            self.scroll.magnification = size.noteMagnification
+            self.layoutEditor()
+        }
         for format in NoteFormat.allCases {
             let button = NSButton(image: NSImage(systemSymbolName: format.symbol, accessibilityDescription: format.label)!,
                                   target: self, action: #selector(formatClicked(_:)))
@@ -149,8 +158,14 @@ final class NativeNotePanel: NSView, NSTextViewDelegate {
             button.frame = NSRect(x: 4 + CGFloat(index) * width, y: bounds.height - height, width: width, height: height)
         }
         scroll.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - height)
-        editor.minSize = scroll.contentSize
-        editor.setFrameSize(NSSize(width: scroll.contentSize.width, height: max(scroll.contentSize.height, editor.frame.height)))
+        layoutEditor()
+    }
+
+    private func layoutEditor() {
+        // Use document coordinates to wrap the text at the visible width at every size.
+        let viewport = scroll.contentView.bounds.size
+        editor.minSize = viewport
+        editor.setFrameSize(NSSize(width: viewport.width, height: max(viewport.height, editor.frame.height)))
     }
 
     func setLayoutEditing(_ active: Bool) {
@@ -215,7 +230,7 @@ final class NativeNotePanel: NSView, NSTextViewDelegate {
         func value(replacing old: Any?) -> Any {
             switch format {
             case .bold:
-                let font = old as? NSFont ?? .systemFont(ofSize: 14)
+                let font = old as? NSFont ?? .systemFont(ofSize: PanelTextSize.standardNotePointSize)
                 let manager = NSFontManager.shared
                 return enable ? manager.convert(font, toHaveTrait: .boldFontMask) : manager.convert(font, toNotHaveTrait: .boldFontMask)
             case .underline: return enable ? NSUnderlineStyle.single.rawValue : 0

@@ -334,6 +334,6 @@ final class NotionTasksTests: XCTestCase {
         XCTAssertTrue(pieces.allSatisfy { (($0["text"] as? [String: String])?["content"]?.count ?? 0) <= 2000 })
         let status = try body(NotionRequests.updateTask("p", try XCTUnwrap(statusSchema.defaultMapping()), statusOptionID: "o2"))
         XCTAssertEqual((((status["properties"] as? [String: Any])?["%3AUPp"] as? [String: Any])?["status"] as? [String: String])?["id"], "o2")
-        XCTAssertEqual(NotionTextSize.allCases.map(\.task), [13, 15, 17, 20])
+        XCTAssertEqual(NotionTextSize.allCases.map(\.task), [11, 13, 15, 17, 20])
     }
 }

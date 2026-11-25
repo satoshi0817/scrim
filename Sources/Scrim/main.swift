@@ -47,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.shareLegacyDisplayContent()
         // Only the running app reads the Keychain; verification runs keep the empty in-memory store.
         NotionEnvironment.current = NotionEnvironment(tokens: KeychainNotionTokenStore(), baseURL: NotionAPI.baseURL)
-        NotionAppearance.shared.textSize = store.notionTextSize
+        PanelTextAppearance.shared.load(from: store)
         overlay = OverlayController(store: store); settings = SettingsController(store: store)
         meetingBadge = MeetingNotchBadge(store: store)
         overlay.isSettingsKey = { [weak self] in self?.settings.window.isKeyWindow ?? false }

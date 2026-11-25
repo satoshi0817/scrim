@@ -21,7 +21,7 @@ public struct PanelDocumentStorage: Sendable {
     }
     public func create(_ content: String, kind: Kind) throws -> URL {
         if kind == .text {
-            return try createNote(NSAttributedString(string: content, attributes: [.font: NSFont.systemFont(ofSize: 14)]))
+            return try createNote(NSAttributedString(string: content, attributes: [.font: NSFont.systemFont(ofSize: PanelTextSize.standardNotePointSize)]))
         }
         return try createFile(named: "index.html") { try content.write(to: $0, atomically: true, encoding: .utf8) }
     }
@@ -66,7 +66,7 @@ public struct PanelDocumentStorage: Sendable {
             return try NSAttributedString(url: url, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
         }
         return NSAttributedString(string: try String(contentsOf: url),
-                                  attributes: [.font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)])
+                                  attributes: [.font: NSFont.monospacedSystemFont(ofSize: PanelTextSize.standardNotePointSize, weight: .regular)])
     }
 
     public func saveNote(_ contents: NSAttributedString, at url: URL) throws {
@@ -132,7 +132,7 @@ public struct PanelDocumentStorage: Sendable {
     public func replace(_ content: String, at url: URL) throws {
         guard owns(url) else { throw CocoaError(.fileWriteNoPermission) }
         if contentURL(for: url).pathExtension.lowercased() == "rtf" {
-            try saveNote(NSAttributedString(string: content, attributes: [.font: NSFont.systemFont(ofSize: 14)]), at: url)
+            try saveNote(NSAttributedString(string: content, attributes: [.font: NSFont.systemFont(ofSize: PanelTextSize.standardNotePointSize)]), at: url)
             return
         }
         try content.write(to: url, atomically: true, encoding: .utf8)
