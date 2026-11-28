@@ -178,7 +178,7 @@ enum AgendaPresentation {
         calendars = available.map { calendar in
             CalendarOption(id: calendar.calendarIdentifier, title: calendar.title,
                            accountID: calendar.source.sourceIdentifier, accountTitle: calendar.source.title,
-                           color: calendar.cgColor.flatMap(NSColor.init(cgColor:)) ?? ScrimPalette.nativeBlue)
+                           color: calendar.cgColor.flatMap(NSColor.init(cgColor:)) ?? .systemGray)
         }.sorted { ($0.accountTitle, $0.title, $0.id) < ($1.accountTitle, $1.title, $1.id) }
         let selected = available.filter { isSelected($0.calendarIdentifier) }
         // Passing an empty array to EventKit can mean "all"; never query in that case.
@@ -190,7 +190,7 @@ enum AgendaPresentation {
             .map { event in
                 UpcomingEvent(id: event.calendar.calendarIdentifier + ":" + (event.eventIdentifier ?? event.calendarItemIdentifier) + ":" + String(event.startDate.timeIntervalSince1970), title: event.title ?? "名称未設定", start: event.startDate,
                               end: event.endDate, allDay: event.isAllDay, location: event.location,
-                              color: event.calendar.cgColor.flatMap(NSColor.init(cgColor:)) ?? ScrimPalette.nativeBlue, attendance: AgendaAttendance(event: event), calendarID: event.calendar.calendarIdentifier,
+                              color: event.calendar.cgColor.flatMap(NSColor.init(cgColor:)) ?? .systemGray, attendance: AgendaAttendance(event: event), calendarID: event.calendar.calendarIdentifier,
                               meetingURL: MeetingLink.find(in: [event.url?.absoluteString, event.location, event.notes]),
                               links: EventLinks.extract(in: [event.url?.absoluteString, event.location, event.notes]), notes: EventLinks.notes(event.notes))
             }
@@ -209,6 +209,7 @@ enum AgendaPresentation {
 }
 
 struct UpcomingEventsView: View {
+    @Environment(\.scrimAccent) private var accent
     @ObservedObject var model: UpcomingEventsModel
     let now: Date
     let size: CGSize
@@ -223,11 +224,11 @@ struct UpcomingEventsView: View {
             HStack(alignment: .firstTextBaseline) {
                 HStack(spacing: 8) {
                     Image(systemName: "calendar").font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
-                    Text("次の予定").font(.system(size: compact ? 16 : 18, weight: .semibold))
+                    Text("次の予定").font(ScrimType.heading(compact: compact))
                 }
                 Spacer(minLength: 4)
                 Text("\(model.displayDays)日間 · \(model.events.count)件")
-                    .font(.system(size: 11, weight: .medium)).monospacedDigit().foregroundStyle(.secondary)
+                    .font(ScrimType.metadata()).monospacedDigit().foregroundStyle(.secondary)
                     .padding(.horizontal, 9).padding(.vertical, 5)
                     .background(Capsule().fill(Color.primary.opacity(0.05)))
             }
@@ -268,7 +269,7 @@ struct UpcomingEventsView: View {
                                         Text(day.date.formatted(.dateTime.month().day().weekday())).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                                     }
                                     .padding(.top, 12).padding(.bottom, 8)
-                                    .background(Color(nsColor: .windowBackgroundColor))
+                                    .background(accent.background)
                                 }
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 8)
@@ -303,7 +304,6 @@ struct UpcomingEventsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(compact ? 16 : 24)
-        .background(Color(nsColor: .windowBackgroundColor))
     }
     private func agendaNavigation(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -325,19 +325,19 @@ struct UpcomingEventsView: View {
         return HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("次の予定 · " + AgendaPresentation.countdown(to: event.start, now: now))
-                    .font(.system(size: compact ? 15 : 17, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .font(.system(size: compact ? 15 : 17, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(.primary)
-                Text(event.title).font(.system(size: compact ? 13 : 14, weight: .medium)).foregroundStyle(.secondary).lineLimit(2)
+                Text(event.title).font(ScrimType.body(compact ? 13 : 14)).foregroundStyle(.secondary).lineLimit(2)
             }.frame(maxWidth: .infinity, alignment: .leading)
             if showsJoin, imminent, let link = event.meetingLinks.first {
                 Button { model.openMeeting(link.url) } label: {
                     Label("参加", systemImage: "video.fill").font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white).padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Capsule().fill(ScrimPalette.button))
+                        .background(Capsule().fill(accent.button))
                 }.buttonStyle(.plain).modifier(HandCursor()).help((link.meetingService ?? "会議") + "を外部ブラウザで開く")
             }
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 13).fill(ScrimPalette.blue.opacity(0.065)).overlay(RoundedRectangle(cornerRadius: 13).fill(countdownTint(event))))
+            .background(RoundedRectangle(cornerRadius: 13).fill(accent.ink.opacity(0.065)).overlay(RoundedRectangle(cornerRadius: 13).fill(countdownTint(event))))
     }
     private func dayTitle(_ date: Date) -> String {
         let calendar = Calendar.current
@@ -348,7 +348,7 @@ struct UpcomingEventsView: View {
     @ViewBuilder private func attendanceBadge(_ status: AgendaAttendance) -> some View {
         if status == .accepted || status == .pending {
             let accepted = status == .accepted
-            let ink = ScrimPalette.badge(accepted: accepted, dark: colorScheme == .dark)
+            let ink = accepted ? accent.ink : (colorScheme == .dark ? ScrimPalette.amber : ScrimPalette.mix(ScrimPalette.nativeAmber, .black, 0.59))
             Label(status.rawValue, systemImage: accepted ? "checkmark.circle.fill" : "questionmark.circle")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(ink)
@@ -381,17 +381,17 @@ struct UpcomingEventsView: View {
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(Capsule().fill(Color.primary.opacity(0.05)))
                 } else if ongoing {
-                    Label("進行中", systemImage: "circle.fill").font(.system(size: 10, weight: .medium)).foregroundStyle(ScrimPalette.badge(accepted: true, dark: colorScheme == .dark))
+                    Label("進行中", systemImage: "circle.fill").font(.system(size: 10, weight: .medium)).foregroundStyle(accent.ink)
                 } else if ended {
                     Text("終了").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
                 }
             }
             Text(event.title)
-                .font(.system(size: compact ? 14 : 15, weight: .medium)).lineSpacing(2).lineLimit(3)
+                .font(ScrimType.body(compact ? 14 : 15)).lineSpacing(2).lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
             if let location = event.location, !location.isEmpty, (event.meetingURL == nil || URL(string: location) != event.meetingURL) {
                 Label(location.replacingOccurrences(of: "\n", with: " · "), systemImage: "mappin")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                    .font(ScrimType.metadata()).foregroundStyle(.secondary).lineLimit(2)
             }
             ForEach(featured ? event.meetingLinks : []) { link in
                 AgendaLinkButton(link: link, primary: true) { model.openMeeting(link.url) }
@@ -460,7 +460,7 @@ struct UpcomingEventsView: View {
             let parts = eventTime(event).components(separatedBy: "–")
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(parts.first ?? "")
-                    .font(.system(size: compact ? 21 : 24, weight: .medium, design: .rounded))
+                    .font(ScrimType.reading(compact ? 21 : 24))
                     .tracking(-0.6).foregroundStyle(.primary)
                 Text("—").font(.system(size: 11, weight: .light)).foregroundStyle(.tertiary)
                 Text(parts.count > 1 ? parts[1] : "")
@@ -567,12 +567,13 @@ private struct HandCursor: ViewModifier {
 }
 
 private struct AgendaLinkButton: View {
+    @Environment(\.scrimAccent) private var accent
     let link: EventLink
     let primary: Bool
     let action: () -> Void
     @State private var hovering = false
     private var tint: Color {
-        ScrimPalette.button
+        accent.button
     }
     var body: some View {
         Button(action: action) {
@@ -599,7 +600,7 @@ private struct AgendaLinkButton: View {
             .frame(maxWidth: primary ? nil : .infinity, alignment: .leading)
             .background {
                 if primary {
-                    Capsule().fill(LinearGradient(colors: [tint.opacity(hovering ? 1 : 0.94), tint.opacity(hovering ? 0.96 : 0.82)], startPoint: .top, endPoint: .bottom))
+                    Capsule().fill(tint)
                 } else {
                     RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(hovering ? 0.09 : 0.045))
                 }

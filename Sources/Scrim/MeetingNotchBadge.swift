@@ -105,6 +105,13 @@ private final class NotchHostingView: NSHostingView<NotchWings> {
 }
 
 private struct NotchWings: View, Equatable {
+    @ObservedObject private var theme = ScrimTheme.shared
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.meetingURL == rhs.meetingURL && lhs.endsAt == rhs.endsAt && lhs.ongoing == rhs.ongoing
+            && lhs.seconds == rhs.seconds && lhs.notchWidth == rhs.notchWidth
+    }
+
     let meetingURL: URL?
     let endsAt: Date
     let ongoing: Bool
@@ -116,7 +123,7 @@ private struct NotchWings: View, Equatable {
         if seconds < 300 {
             return ScrimPalette.mix(ScrimPalette.nativeRed, ScrimPalette.nativeAmber, CGFloat(seconds) / 300)
         }
-        return ScrimPalette.mix(ScrimPalette.nativeAmber, ScrimPalette.nativeBlue, CGFloat(seconds - 300) / 300)
+        return ScrimPalette.mix(ScrimPalette.nativeAmber, theme.accent.native, CGFloat(seconds - 300) / 300)
     }
     var body: some View {
         HStack(spacing: 0) {
@@ -146,6 +153,7 @@ private struct NotchWings: View, Equatable {
 }
 
 struct NotchSettingsPreview: View {
+    @Environment(\.scrimAccent) private var accent
     @State private var ongoing = false
     @State private var minutes = 5.0
     var body: some View {
@@ -159,7 +167,7 @@ struct NotchSettingsPreview: View {
                     Spacer(minLength: 0)
                 }
                 .frame(height: 54, alignment: .top)
-                .background(ScrimPalette.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+                .background(accent.ink.opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
                 Picker("予定の状態", selection: $ongoing) {
                     Text("開始前").tag(false)
                     Text("進行中").tag(true)

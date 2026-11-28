@@ -62,6 +62,7 @@ private extension WorkCity {
 }
 
 struct WorldClockView: View {
+    @Environment(\.scrimAccent) private var accent
     let now: Date
     @AppStorage("worldClockWorkCities.v1") private var saved = Data()
     @State private var selection: Date?
@@ -71,7 +72,7 @@ struct WorldClockView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("世界時計", systemImage: "globe").font(.headline)
+                Label("世界時計", systemImage: "globe").font(ScrimType.heading(compact: true))
                 Spacer()
                 Button { copyTimes() } label: { Image(systemName: "doc.on.doc") }.help("各地の日時をコピー")
             }
@@ -117,7 +118,7 @@ struct WorldClockView: View {
             let w = size.width / CGFloat(active.count)
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.secondary.opacity(0.15)))
             for index in active.indices where active[index] {
-                context.fill(Path(CGRect(x: CGFloat(index)*w, y: 0, width: w+0.3, height: size.height)), with: .color(ScrimPalette.blue))
+                context.fill(Path(CGRect(x: CGFloat(index)*w, y: 0, width: w+0.3, height: size.height)), with: .color(accent.ink))
             }
             let x = size.width * instant.timeIntervalSince(day.start) / day.duration
             context.fill(Path(CGRect(x: min(x,size.width-2), y: 0, width: 2, height: size.height)), with: .color(.primary))

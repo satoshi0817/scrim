@@ -416,6 +416,7 @@ import ScrimCore
 }
 
 struct NotionTasksView: View {
+    @Environment(\.scrimAccent) private var accent
     @ObservedObject var model: NotionTasksModel
     let now: Date
     let size: CGSize
@@ -443,7 +444,7 @@ struct NotionTasksView: View {
             HStack(spacing: 8) {
                 Image(systemName: "checklist").font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
                 Text(model.mapping?.name.isEmpty == false ? model.mapping!.name : "Notionタスク")
-                    .font(.system(size: compact ? 16 : 18, weight: .semibold)).lineLimit(1)
+                    .font(ScrimType.heading(compact: compact)).lineLimit(1)
             }
             Spacer(minLength: 4)
             if model.loading { ProgressView().controlSize(.small) }
@@ -451,7 +452,7 @@ struct NotionTasksView: View {
                 let open = model.tasks.count - model.completing.count
                 let shown = model.visibleTasks(now: now).count - model.completing.count
                 Text(model.isFiltering ? "\(shown)／\(open)件" : "\(open)件")
-                    .font(.system(size: 11, weight: .medium)).monospacedDigit().foregroundStyle(.secondary)
+                    .font(ScrimType.metadata()).monospacedDigit().foregroundStyle(.secondary)
                     .padding(.horizontal, 9).padding(.vertical, 5)
                     .background(Capsule().fill(Color.primary.opacity(0.05)))
             }
@@ -508,14 +509,14 @@ struct NotionTasksView: View {
                 .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.05)))
                 Button { model.showingFilters = true } label: {
                     Image(systemName: model.filter.isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-                        .font(.system(size: 17)).foregroundStyle(model.filter.isActive ? ScrimPalette.blue : Color.secondary)
+                        .font(.system(size: 17)).foregroundStyle(model.filter.isActive ? accent.ink : Color.secondary)
                 }
                 .buttonStyle(.borderless).help("絞り込み").disabled(editing)
                 .accessibilityLabel(model.filter.isActive ? "絞り込み（適用中）" : "絞り込み")
             }
             if let summary = model.filterSummary {
                 HStack(spacing: 6) {
-                    Text(summary).font(.system(size: appearance.notionSize.detail)).foregroundStyle(ScrimPalette.blue).lineLimit(1)
+                    Text(summary).font(.system(size: appearance.notionSize.detail)).foregroundStyle(accent.ink).lineLimit(1)
                     Spacer(minLength: 4)
                     Button("解除") { model.clearFilters() }.buttonStyle(.borderless).controlSize(.small).disabled(editing)
                 }
@@ -549,13 +550,13 @@ struct NotionTasksView: View {
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
             Button { model.complete(task) } label: {
                 Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: size.task + 2)).foregroundStyle(done ? ScrimPalette.blue : Color.secondary)
+                    .font(.system(size: size.task + 2)).foregroundStyle(done ? accent.ink : Color.secondary)
             }
             .buttonStyle(.plain).disabled(done || editing || model.saving.contains(task.id))
             .accessibilityLabel(done ? "完了済み" : "\(task.title)を完了にする")
             VStack(alignment: .leading, spacing: 3) {
                 Text(task.title.isEmpty ? "無題" : task.title)
-                    .font(.system(size: size.task)).strikethrough(done).foregroundStyle(done ? .secondary : .primary)
+                    .font(ScrimType.body(size.task)).strikethrough(done).foregroundStyle(done ? .secondary : .primary)
                     .lineLimit(2)
                 if task.due != nil || !assignees.isEmpty {
                     HStack(spacing: 10) {

@@ -75,6 +75,7 @@ final class NativeNotePanel: NSView, NSTextViewDelegate {
     private var buttons: [NSButton] = []
     private let retry = NSButton()
     private var textSizeObservation: AnyCancellable?
+    private var accentObservation: AnyCancellable?
 
     init(note: PanelNote, notes: PanelNotes, openWebLink: @escaping (URL) -> Void) {
         self.note = note
@@ -85,6 +86,8 @@ final class NativeNotePanel: NSView, NSTextViewDelegate {
         editor = NoteTextView(frame: .zero, textContainer: container)
         super.init(frame: .zero)
         wantsLayer = true
+        editor.drawsBackground = false
+        scroll.drawsBackground = false
         editor.openWebLink = openWebLink
         editor.notePanel = self
         editor.delegate = self
@@ -133,7 +136,14 @@ final class NativeNotePanel: NSView, NSTextViewDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(updateSaveStatus),
                                                name: PanelNote.saveStatusChanged, object: note)
         updateSaveStatus()
-        updateButtons()
+        accentObservation = ScrimTheme.shared.$settings.sink { [weak self] _ in
+            guard let self else { return }
+            var attributes = self.editor.linkTextAttributes ?? [:]
+            attributes[.foregroundColor] = ScrimTheme.shared.accent.nativeInk
+            self.editor.linkTextAttributes = attributes
+            self.updateBackground()
+            self.updateButtons()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -146,7 +156,13 @@ final class NativeNotePanel: NSView, NSTextViewDelegate {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = NSColor.textBackgroundColor.cgColor }
+        updateBackground()
+    }
+
+    private func updateBackground() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = ScrimTheme.shared.accent.nativeBackground.cgColor
+        }
     }
 
     override func layout() {
@@ -206,7 +222,7 @@ final class NativeNotePanel: NSView, NSTextViewDelegate {
         for (format, button) in zip(NoteFormat.allCases, buttons) {
             let active = selectionUses(format)
             button.state = active ? .on : .off
-            button.contentTintColor = active ? .controlAccentColor : .labelColor
+            button.contentTintColor = active ? ScrimTheme.shared.accent.nativeInk : .labelColor
         }
     }
 

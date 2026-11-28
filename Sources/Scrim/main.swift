@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         ReleaseUpdater.shared.start()
         SettingsController.applyAppearance(store.appearanceMode)
+        ScrimTheme.shared.apply(store.panelTheme)
         UserDefaults.standard.set("WhenScrolling", forKey: "AppleShowScrollBars")
         let obsolete = URL(string: "scrim-widget://inbox")!
         if store.panels.contains(where: { $0.url == obsolete }) { store.panels.removeAll { $0.url == obsolete } }

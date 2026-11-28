@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import WebKit
 import PDFKit
 import QuartzCore
@@ -20,8 +21,9 @@ final class ActionButton: NSButton {
 final class OverlayPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
-    var dismiss: (() -> Void)?
-    override func cancelOperation(_ sender: Any?) { dismiss?() }
+    // The local event monitor owns overlay Escape. Unhandled single presses
+    // may still reach this responder after the focused content sees them.
+    override func cancelOperation(_ sender: Any?) {}
 
     override func sendEvent(_ event: NSEvent) {
         guard let root = contentView as? Backdrop, root.editing else { super.sendEvent(event); return }
@@ -214,6 +216,23 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor }
+        updateAccent()
+    }
+    func updateAccent() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.borderColor = ScrimTheme.shared.accent.nativeInk.cgColor
+        }
+        needsDisplay = true
+    }
+    func handleTaskDetailEscape() -> Bool {
+        guard let widget = widgetPanel, widget.model.spec.kind == .notionTasks else { return false }
+        let model = widget.model.notion
+        guard let detail = model.detail else { return false }
+        if detail.editingBlock != nil { detail.cancelEdit() }
+        else if detail.editingTitle { detail.cancelTitleEdit() }
+        else if detail.confirmingDelete != nil { detail.confirmingDelete = nil }
+        else { model.closeDetail() }
+        return true
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -286,7 +305,7 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
         widgetPanel?.setEditing(value)
         (document as? NativeNotePanel)?.setLayoutEditing(value)
         layer?.borderWidth = value ? 3 : 0
-        layer?.borderColor = ScrimPalette.nativeBlue.cgColor; needsDisplay = true
+        updateAccent()
         window?.invalidateCursorRects(for: self)
         if let window { hovering = value && bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) }
         if !value && isShowingMenu { dismissSettings?() }
@@ -361,7 +380,7 @@ final class PanelView: NSView, WKNavigationDelegate, PDFViewDelegate {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         if editing && !capturingBlur {
-            ScrimPalette.nativeBlue.setFill()
+            ScrimTheme.shared.accent.nativeInk.setFill()
             for x in [CGFloat(0), bounds.width-10] {
                 for y in [CGFloat(0), bounds.height-10] { NSRect(x: x, y: y, width: 10, height: 10).fill() }
             }
@@ -754,6 +773,10 @@ final class OverlayController {
     var state: OverlayState = .hidden
     var onDismiss: (() -> Void)?
     private var dialog: OverlayDialogBackdrop?
+    private var accentObservation: AnyCancellable?
+    private var lastEscape: TimeInterval?
+    private var clickedPanelID: UUID?
+    private var usesDoubleEscape: Bool
     private let actionSelection = ActionSelection()
     private weak var embeddedSettings: SettingsController?
     private(set) weak var panelWithSettings: PanelView?
@@ -787,7 +810,7 @@ final class OverlayController {
         shield.wantsLayer = true
         shield.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.32).cgColor
         shield.close = { [weak self] in self?.closeDialog() }
-        let host = NSHostingView(rootView: content.tint(ScrimPalette.blue))
+        let host = NSHostingView(rootView: content.scrimTint())
         let w = min(size.width, root.bounds.width - 24), h = min(size.height, root.bounds.height - 24)
         host.frame = NSRect(x: (root.bounds.width-w)/2, y: (root.bounds.height-h)/2, width: w, height: h)
         host.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
@@ -898,7 +921,9 @@ final class OverlayController {
         self.documentStorage = documentStorage
         notes = PanelNotes(files: documentStorage)
         self.websiteDataStore = websiteDataStore
-        self.store = store; records = Array(store.panels.prefix(PanelPool.maximum)).map { record in
+        self.store = store
+        usesDoubleEscape = store.doubleEscapeToDismiss
+        records = Array(store.panels.prefix(PanelPool.maximum)).map { record in
             var clean = record; clean.url = WebPanelPolicy.launchURL(record.url); return clean
         }
         root = Backdrop(frame: NSRect(x: 0, y: 0, width: 1800, height: 1169))
@@ -907,7 +932,7 @@ final class OverlayController {
         panel.contentView = root; panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
         panel.level = .screenSaver; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.hidesOnDeactivate = false; panel.alphaValue = 0; panel.ignoresMouseEvents = true
-        root.dismiss = { [weak self] in self?.onDismiss?() }; panel.dismiss = root.dismiss
+        root.dismiss = { [weak self] in self?.onDismiss?() }
         root.addSubview(toolbar)
         pill.alignment = .center; pill.textColor = .secondaryLabelColor
         pill.font = .systemFont(ofSize: 11); toolbar.addSubview(pill)
@@ -926,6 +951,9 @@ final class OverlayController {
         }
         for record in records { install(record); if WidgetSpec(url: record.url) == nil { pool.add(record.id) } }
         reconcile()
+        accentObservation = ScrimTheme.shared.$settings.dropFirst().sink { [weak self] _ in
+            self?.views.values.forEach { $0.updateAccent() }
+        }
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             let ids = Set(NSScreen.screens.compactMap { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value })
             self?.displayIdentity.forgetUnavailable(connected: ids)
@@ -940,8 +968,17 @@ final class OverlayController {
             if event.type == .scrollWheel, self.pagesScroll(event) { return nil }
             if self.state == .peek && self.store.peekAllowsInteraction { return PanelPointerEvents.withoutCommand(event) }
             guard self.state == .pinned else { return event }
-            if event.type == .keyDown, let editor = self.panel.firstResponder as? NoteTextView, editor.hasMarkedText() { return event }
-            if self.embeddedSettings?.recordingAnyKeys == true { return event }
+            let isEscape = event.type == .keyDown && event.keyCode == 53
+                && event.modifierFlags.intersection([.command, .shift, .control, .option]).isEmpty
+            if !isEscape { self.lastEscape = nil }
+            if event.type == .keyDown, let editor = self.panel.firstResponder as? NSTextView, editor.hasMarkedText() {
+                self.lastEscape = nil
+                return event
+            }
+            if self.embeddedSettings?.recordingAnyKeys == true {
+                self.lastEscape = nil
+                return event
+            }
             if event.type == .keyDown && event.charactersIgnoringModifiers == "," &&
                 event.modifierFlags.intersection([.command, .shift, .control, .option]) == .command {
                 if !event.isARepeat {
@@ -956,7 +993,10 @@ final class OverlayController {
             if self.dialog != nil {
                 if event.type == .keyDown {
                     switch event.keyCode {
-                    case 53: self.closeDialog(); return nil
+                    case 53:
+                        self.lastEscape = nil
+                        if !event.isARepeat { self.closeDialog() }
+                        return nil
                     case 125, 126:
                         if self.showingActions { self.actionSelection.move(event.keyCode == 125 ? 1 : -1); return nil }
                     case 36, 76:
@@ -980,17 +1020,46 @@ final class OverlayController {
                 if !event.isARepeat { self.setEditing(!self.editing) }
                 return nil
             }
-            if event.type == .keyDown && event.keyCode == 53 {
-                if self.editing { self.setEditing(false) }
-                else { self.onDismiss?() }
-                return nil
+            if isEscape, self.panel.attachedSheet == nil {
+                guard !event.isARepeat else { return nil }
+                if self.editing {
+                    self.setEditing(false)
+                    return nil
+                }
+                if self.taskPanelForEscape()?.handleTaskDetailEscape() == true {
+                    self.lastEscape = nil
+                    return nil
+                }
+                let doubleEscape = self.store.doubleEscapeToDismiss
+                if doubleEscape != self.usesDoubleEscape {
+                    self.usesDoubleEscape = doubleEscape
+                    self.lastEscape = nil
+                }
+                if !doubleEscape || self.lastEscape.map({ (0...0.5).contains(event.timestamp - $0) }) == true {
+                    self.lastEscape = nil
+                    self.onDismiss?()
+                    return nil
+                }
+                self.lastEscape = event.timestamp
+                return event
             }
             if event.type == .leftMouseDown {
                 let p = self.root.convert(event.locationInWindow, from: nil)
-                if let view = self.root.subviews.reversed().compactMap({ $0 as? PanelView }).first(where: { $0.frame.contains(p) }) { self.touch(view.id) }
+                let view = self.root.subviews.reversed().compactMap { $0 as? PanelView }.first { $0.frame.contains(p) }
+                self.clickedPanelID = view?.id
+                if let view { self.touch(view.id) }
             }
             return event
         }
+    }
+    private func taskPanelForEscape() -> PanelView? {
+        if let clickedPanelID, let view = views[clickedPanelID] { return view }
+        var responder = panel.firstResponder
+        while let view = responder as? NSView {
+            if let card = view as? PanelView { return card }
+            responder = view.superview
+        }
+        return nil
     }
     private func displayKey(for screen: NSScreen) -> String {
         // No screen index/name fallback: missing UUID/number never borrows another display's layout.
@@ -1014,6 +1083,10 @@ final class OverlayController {
         if wasHidden && next != .hidden {
             target = presentationScreen(explicit: explicit)
             if target == nil { return false }
+        }
+        if state != next {
+            lastEscape = nil
+            clickedPanelID = nil
         }
         state = next
         if next == .hidden { scheduleIdleRelease() } else { idleRelease?.invalidate(); idleRelease = nil }
@@ -1159,6 +1232,8 @@ final class OverlayController {
     func selectPage(_ index: Int) {
         guard state == .pinned, dialog == nil, panel.attachedSheet == nil,
               (0..<store.pageCount).contains(index), index != store.currentPage, let key = activeDisplay else { return }
+        lastEscape = nil
+        clickedPanelID = nil
         persist()
         placementPreview = nil
         let outgoingIndex = store.currentPage
@@ -1343,6 +1418,7 @@ final class OverlayController {
         root.addSubview(toolbar, positioned: dialog == nil ? .above : .below, relativeTo: dialog)
     }
     func setEditing(_ value: Bool) {
+        lastEscape = nil
         closeDialog()
         editing = value && state == .pinned
         panel.acceptsMouseMovedEvents = editing
@@ -1496,8 +1572,8 @@ final class OverlayController {
             marker.wantsLayer = true
             marker.layer?.cornerRadius = 12
             marker.layer?.borderWidth = 2
-            marker.layer?.borderColor = ScrimPalette.nativeBlue.cgColor
-            marker.layer?.backgroundColor = ScrimPalette.nativeBlue.withAlphaComponent(0.2).cgColor
+            marker.layer?.borderColor = ScrimTheme.shared.accent.nativeInk.cgColor
+            marker.layer?.backgroundColor = ScrimTheme.shared.accent.nativeInk.withAlphaComponent(0.2).cgColor
             root.addSubview(marker, positioned: .below, relativeTo: dialog)
             galleryDrag = (views.mapValues { $0.frame }, marker)
             dialog.alphaValue = 0

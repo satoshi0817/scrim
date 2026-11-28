@@ -114,6 +114,8 @@ final class NativeWidgetPanel: NSHostingView<WidgetPanelView> {
 }
 
 struct WidgetPanelView: View {
+    @ObservedObject private var theme = ScrimTheme.shared
+    private var accent: ScrimAccent { theme.accent }
     @ObservedObject var model: WidgetModel
     var openWebLink: (URL) -> Void = { DefaultBrowser.open($0) }
     @State private var clockPage = 0
@@ -139,10 +141,11 @@ struct WidgetPanelView: View {
                 case .notionTasks: NotionTasksView(model: model.notion, now: model.now, size: geometry.size, editing: model.isEditing)
                 }
             }
-            .tint(ScrimPalette.blue)
             .padding([.upcoming, .notionTasks].contains(model.spec.kind) ? 0 : model.spec.kind == .weather ? min(24, min(geometry.size.width, geometry.size.height) * 0.075) : compact ? 16 : 24)
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
+        .background(accent.background)
+        .tint(accent.ink).environment(\.scrimAccent, accent)
     }
     private func time(_ date: Date, format: String, zone: TimeZone = .current) -> String {
         WidgetDateFormatters.shared.string(from: date, format: format, zone: zone)
@@ -161,7 +164,6 @@ struct WidgetPanelView: View {
                     .background(Capsule().fill(Color.primary.opacity(0.045)))
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor).padding(-32))
     }
     private var digitalClock: some View {
         GeometryReader { geometry in
@@ -178,9 +180,9 @@ struct WidgetPanelView: View {
                     let city = WorkCity(id: id)
                     VStack(spacing: min(6, geometry.size.height * 0.035)) {
                         Text(city.name + " · " + city.label(model.now, format: "z"))
-                            .font(.system(size: min(14, max(10, font * 0.25)), weight: .medium)).foregroundStyle(.secondary)
+                            .font(ScrimType.metadata(min(13, max(10, font * 0.25)))).foregroundStyle(.secondary)
                         HStack(alignment: .firstTextBaseline, spacing: 3) {
-                            Text(city.label(model.now, format: "HH:mm")).font(.system(size: font, weight: .regular, design: .rounded))
+                            Text(city.label(model.now, format: "HH:mm")).font(ScrimType.reading(font))
                             if visible.count == 1 {
                                 Text(city.label(model.now, format: "ss")).font(.system(size: font * 0.36)).foregroundStyle(.secondary)
                             }
@@ -209,7 +211,7 @@ struct WidgetPanelView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(time(start, format: "M月")).font(.system(size: 14, weight: .semibold)).foregroundStyle(ScrimPalette.red)
-                    Text(time(model.now, format: "d")).font(.system(size: size.height < 260 ? 32 : 48, weight: .light, design: .rounded))
+                    Text(time(model.now, format: "d")).font(ScrimType.reading(size.height < 260 ? 32 : 48))
                 }
                 Spacer(minLength: 0)
                 Button { model.monthOffset -= 1 } label: { Image(systemName: "chevron.left") }.help("前の月")
@@ -228,10 +230,10 @@ struct WidgetPanelView: View {
                             let day = row*7+column-offset+1
                             let isToday = day > 0 && day <= count && calendar.isDate(calendar.date(byAdding: .day, value: day-1, to: start)!, inSameDayAs: model.now)
                             Text(day > 0 && day <= count ? String(day) : " ")
-                                .font(.system(size: min(18, max(11, cellHeight*0.45)), weight: isToday ? .semibold : .regular, design: .rounded))
+                                .font(.system(size: min(18, max(11, cellHeight*0.45)), weight: isToday ? .semibold : .regular))
                                 .foregroundStyle(isToday ? Color.white : column == 0 ? ScrimPalette.red : .primary)
                                 .frame(maxWidth: .infinity).frame(height: cellHeight)
-                                .background { if isToday { Circle().fill(ScrimPalette.red).frame(width: min(32, cellHeight-1), height: min(32, cellHeight-1)) } }
+                                .background { if isToday { Circle().fill(accent.button).frame(width: min(32, cellHeight-1), height: min(32, cellHeight-1)) } }
                                 .accessibilityLabel(day > 0 && day <= count ? "\(day)日"+(isToday ? " 今日" : "") : "")
                         }
                     }
@@ -239,7 +241,6 @@ struct WidgetPanelView: View {
             }
             Spacer(minLength: 0)
         }
-        .background(Color(nsColor: .windowBackgroundColor).padding(-32))
     }
     @ViewBuilder private func weather(compact: Bool, size: CGSize) -> some View {
         if model.showsHourly && size.width >= 275 && size.width / max(1, size.height) >= 1.7 && size.height < 320 {
@@ -247,22 +248,22 @@ struct WidgetPanelView: View {
         } else {
         VStack(alignment: .leading, spacing: min(10, size.height * 0.025)) {
             HStack {
-                Text("東京").font(.system(size: min(22, size.height * 0.12), weight: .medium))
+                Text("東京").font(ScrimType.heading(compact: compact))
                 Spacer()
-                if model.loading { ProgressView().controlSize(.small).tint(.white) }
+                if model.loading { ProgressView().controlSize(.small) }
             }
             if let weather = model.weather {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 0) {
                         if let temperature = weather.temperature {
                             Text(String(format: "%.0f°", temperature))
-                                .font(.system(size: min(76, min(size.width * 0.24, size.height * 0.30)), weight: .thin))
+                                .font(ScrimType.reading(min(76, min(size.width * 0.24, size.height * 0.30))))
                             if let date = weather.observedAt, size.height >= 220 { Text(time(date, format: "HH:mm", zone: TimeZone(identifier: "Asia/Tokyo")!)+" 観測").font(.caption2).opacity(0.8) }
                         } else { Text("東京の予報").font(compact ? .title2 : .largeTitle) }
                     }
                     Spacer()
                     Image(systemName: weather.days.first?.symbol ?? "cloud.fill")
-                        .symbolRenderingMode(.palette).foregroundStyle(.white, ScrimPalette.amber, ScrimPalette.blue).font(.system(size: min(64, min(size.width * 0.22, size.height * 0.26))))
+                        .symbolRenderingMode(.palette).foregroundStyle(Color.primary, ScrimPalette.amber, accent.ink).font(.system(size: min(64, min(size.width * 0.22, size.height * 0.26))))
                         .accessibilityLabel(weather.days.first?.description ?? "天気")
                 }
                 if let today = weather.days.first {
@@ -273,12 +274,12 @@ struct WidgetPanelView: View {
                 }
                 if model.showsHourly && size.height >= 280 { hourlyStrip(height: 150) }
                 if !compact && size.height > 480 {
-                    Divider().overlay(.white.opacity(0.25))
+                    Divider()
                     HStack {
                         ForEach(Array(weather.days.prefix(4).enumerated()), id: \.offset) { _, day in
                             VStack(spacing: 6) {
                                 Text(time(day.date, format: "E", zone: TimeZone(identifier: "Asia/Tokyo")!)).font(.caption)
-                                Image(systemName: day.symbol).symbolRenderingMode(.palette).foregroundStyle(.white, ScrimPalette.amber, ScrimPalette.blue).font(.title3).accessibilityLabel(day.description)
+                                Image(systemName: day.symbol).symbolRenderingMode(.palette).foregroundStyle(Color.primary, ScrimPalette.amber, accent.ink).font(.title3).accessibilityLabel(day.description)
                                 Text(day.high.flatMap { high in day.low.map { "\(high)° / \($0)°" } } ?? "—").font(.caption2)
                             }.frame(maxWidth: .infinity)
                         }
@@ -289,23 +290,22 @@ struct WidgetPanelView: View {
                     Link("気象庁", destination: JMAWeather.sourceURL)
                     Text(time(weather.issuedAt, format: "M/d HH:mm", zone: TimeZone(identifier: "Asia/Tokyo")!)+" 発表")
                     if model.error != nil || Date().timeIntervalSince(weather.fetchedAt) > 1200 || Date().timeIntervalSince(weather.issuedAt) > 86400 { Text("· 前回の情報") }
-                }.font(.caption2).opacity(0.75)
+                }.font(ScrimType.metadata(10)).foregroundStyle(.secondary)
             } else {
                 Spacer(minLength: 0)
-                if size.height >= 220 { Image(systemName: "cloud.sun.fill").symbolRenderingMode(.palette).foregroundStyle(.white, ScrimPalette.amber, ScrimPalette.blue).font(.system(size: compact ? 32 : 54)) }
+                if size.height >= 220 { Image(systemName: "cloud.sun.fill").symbolRenderingMode(.palette).foregroundStyle(Color.primary, ScrimPalette.amber, accent.ink).font(.system(size: compact ? 32 : 54)) }
                 Text(model.error ?? "東京の天気を取得しています").font(.callout)
                 if model.error != nil { Button("再試行") { model.refresh(force: true) }.buttonStyle(.bordered) }
                 Spacer(minLength: 0)
             }
         }
-        .foregroundStyle(.white).tint(.white)
+        .foregroundStyle(.primary)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(weatherBackground.padding(-32))
         }
     }
     private func hourlyStrip(height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: min(6, height * 0.025)) {
-            Text("3時間ごとの予報").font(.caption).opacity(0.85)
+            Text("3時間ごとの予報").font(ScrimType.metadata()).foregroundStyle(.secondary)
             if model.hourly.isEmpty {
                 Text(model.hourlyError ?? "予報を取得しています…").font(.caption).opacity(0.8)
             } else {
@@ -315,8 +315,8 @@ struct WidgetPanelView: View {
                         ForEach(model.hourly.filter { $0.date >= model.now }.prefix(count)) { hour in
                             VStack(spacing: min(5, height * 0.02)) {
                                 Text(time(hour.date, format: "H時", zone: TimeZone(identifier: "Asia/Tokyo")!)).font(.caption)
-                                Image(systemName: hour.symbol).symbolRenderingMode(.palette).foregroundStyle(.white, ScrimPalette.amber, ScrimPalette.blue).font(.system(size: min(20, height * 0.15)))
-                                Text(String(format: "%.0f°", hour.temperature)).font(.system(size: 14, weight: .medium))
+                                Image(systemName: hour.symbol).symbolRenderingMode(.palette).foregroundStyle(Color.primary, ScrimPalette.amber, accent.ink).font(.system(size: min(20, height * 0.15)))
+                                Text(String(format: "%.0f°", hour.temperature)).font(ScrimType.reading(14))
                                 if height >= 130 { Text(hour.precipitationProbability.map { "雨 \($0)%" } ?? "—").font(.caption2).opacity(0.85) }
                             }
                             .lineLimit(1).minimumScaleFactor(0.8)
@@ -325,38 +325,31 @@ struct WidgetPanelView: View {
                     }.frame(width: geometry.size.width, alignment: .leading)
                 }.frame(height: min(82, height * 0.58))
             }
-            Link(model.hourlyError == nil ? "wttr.in / WorldWeatherOnline" : "wttr.in · 前回の予報", destination: ThreeHourlyWeather.sourceURL).font(.system(size: 9)).opacity(0.75)
+            Link(model.hourlyError == nil ? "wttr.in / WorldWeatherOnline" : "wttr.in · 前回の予報", destination: ThreeHourlyWeather.sourceURL).font(ScrimType.metadata(10)).foregroundStyle(.secondary)
         }
-    }
-    @Environment(\.colorScheme) private var colorScheme
-    private var weatherBackground: LinearGradient {
-        let colors = colorScheme == .dark
-            ? [ScrimPalette.mix(ScrimPalette.nativeBlue, .black, 0.72), ScrimPalette.mix(ScrimPalette.nativeBlue, .black, 0.50)]
-            : [ScrimPalette.button, ScrimPalette.mix(ScrimPalette.nativeBlue, .black, 0.14)]
-        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
     private func wideWeather(size: CGSize) -> some View {
         HStack(alignment: .top, spacing: min(20, size.width * 0.025)) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("東京").font(.system(size: min(18, size.height * 0.12), weight: .semibold))
+                Text("東京").font(ScrimType.heading(compact: size.height < 140))
                 if let weather = model.weather {
                     Text(weather.temperature.map { String(format: "%.0f°", $0) } ?? "—")
-                        .font(.system(size: min(48, size.height * 0.28), weight: .thin))
+                        .font(ScrimType.reading(min(48, size.height * 0.28)))
                     Text(weather.days.first?.description ?? "").font(.caption).lineLimit(size.height < 160 ? 1 : 2)
                     Spacer(minLength: 0)
-                    Link(model.error == nil ? "気象庁" : "気象庁 · 前回の情報", destination: JMAWeather.sourceURL).font(.system(size: 9)).opacity(0.75)
+                    Link(model.error == nil ? "気象庁" : "気象庁 · 前回の情報", destination: JMAWeather.sourceURL).font(ScrimType.metadata(10)).foregroundStyle(.secondary)
                 } else { Text(model.error ?? "取得しています…").font(.caption) }
             }.frame(width: min(180, size.width * 0.3), alignment: .leading)
-            Divider().overlay(.white.opacity(0.3))
+            Divider()
             hourlyStrip(height: size.height * 0.85).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .foregroundStyle(.white).tint(.white)
-        .background(weatherBackground.padding(-32))
+        .foregroundStyle(.primary)
     }
 }
 
 
 private struct AnalogClockFace: View {
+    @Environment(\.scrimAccent) private var accent
     let now: Date
     var body: some View {
         GeometryReader { proxy in
@@ -367,22 +360,22 @@ private struct AnalogClockFace: View {
             let minutes = Double(components.minute ?? 0) + seconds / 60
             let hours = Double((components.hour ?? 0) % 12) + minutes / 60
             ZStack {
-                Circle().fill(Color(nsColor: .textBackgroundColor)).shadow(color: .black.opacity(0.08), radius: 5, y: 2)
+                Circle().fill(accent.background).shadow(color: .black.opacity(0.08), radius: 5, y: 2)
                 ForEach(0..<60) { tick in
                     Rectangle().fill(Color.primary.opacity(tick % 5 == 0 ? 0.85 : 0.3))
                         .frame(width: tick % 5 == 0 ? 2 : 1, height: side * (tick % 5 == 0 ? 0.045 : 0.022))
                         .offset(y: -radius * 0.9).rotationEffect(.degrees(Double(tick) * 6))
                 }
                 ForEach(1..<13) { hour in
-                    Text(String(hour)).font(.system(size: side * 0.105, weight: .regular, design: .rounded))
+                    Text(String(hour)).font(.system(size: side * 0.105, weight: .regular))
                         .position(x: radius + sin(Double(hour) * .pi / 6) * radius * 0.71,
                                   y: radius - cos(Double(hour) * .pi / 6) * radius * 0.71)
                 }
                 hand(length: side * 0.25, width: side * 0.025, angle: hours * 30)
                 hand(length: side * 0.36, width: side * 0.018, angle: minutes * 6)
-                Capsule().fill(ScrimPalette.amber).frame(width: max(1, side * 0.008), height: side * 0.46)
+                Capsule().fill(accent.ink).frame(width: max(1, side * 0.008), height: side * 0.46)
                     .offset(y: -side * 0.15).rotationEffect(.degrees(seconds * 6))
-                Circle().fill(ScrimPalette.amber).frame(width: side * 0.04, height: side * 0.04)
+                Circle().fill(accent.ink).frame(width: side * 0.04, height: side * 0.04)
             }
             .frame(width: side, height: side)
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)

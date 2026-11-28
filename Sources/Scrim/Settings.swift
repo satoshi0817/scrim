@@ -108,7 +108,7 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
         window.toolbarStyle = .preference
         tabs.tabStyle = .toolbar
         for page in NativeSettingsPage.allCases {
-            let host = NSHostingController(rootView: NativeSettingsForm(controller: self, page: page).tint(ScrimPalette.blue))
+            let host = NSHostingController(rootView: NativeSettingsForm(controller: self, page: page).scrimTint())
             host.preferredContentSize = NSSize(width: 640, height: 540)
             let item = NSTabViewItem(viewController: host)
             item.label = page.title; item.image = NSImage(systemSymbolName: page.symbol, accessibilityDescription: page.title)
@@ -143,6 +143,7 @@ final class SettingsController: NSObject, NSWindowDelegate, ObservableObject {
         refresh()
     }
     func setDockVisible(_ value: Bool) { store.dockVisible = value; dockChanged?(); refresh() }
+    func setDoubleEscapeToDismiss(_ value: Bool) { store.doubleEscapeToDismiss = value; refresh() }
     func setOverlayControlsVisible(_ value: Bool) { store.showsOverlayControls = value; changed?(); refresh() }
     func setLoginEnabled(_ value: Bool) { loginModel.setEnabled(value); refresh() }
     func setCaptureExclusion(_ value: Bool) { store.hideFromScreenCapture = value; window.sharingType = value ? .none : .readOnly; changed?(); refresh() }

@@ -100,6 +100,7 @@ extension NotionClient {
     var assignees: [String] { mapping.assigneeProperty.flatMap { task.choices[$0] }?.map(\.name).filter { !$0.isEmpty } ?? [] }
 
     func beginTitleEdit() { titleDraft = task.title; editingTitle = true }
+    func cancelTitleEdit() { editingTitle = false; titleDraft = "" }
     func saveTitle() {
         let text = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         editingTitle = false
@@ -239,6 +240,7 @@ struct FlowLayout: Layout {
 }
 
 struct FilterChip: View {
+    @Environment(\.scrimAccent) private var accent
     let title: String
     let selected: Bool
     let action: () -> Void
@@ -247,7 +249,7 @@ struct FilterChip: View {
             Text(title).font(.system(size: 12, weight: selected ? .semibold : .regular)).lineLimit(1)
                 .padding(.horizontal, 10).padding(.vertical, 5)
                 .foregroundStyle(selected ? Color.white : Color.primary)
-                .background(Capsule().fill(selected ? ScrimPalette.blue : Color.primary.opacity(0.07)))
+                .background(Capsule().fill(selected ? accent.button : Color.primary.opacity(0.07)))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -320,6 +322,7 @@ struct NotionTaskFiltersView: View {
 
 /// An opened task: title, due date, status, assignees and tags, then its page content.
 struct NotionTaskDetailView: View {
+    @Environment(\.scrimAccent) private var accent
     @ObservedObject var model: NotionTaskDetailModel
     let now: Date
     let close: () -> Void
@@ -335,7 +338,7 @@ struct NotionTaskDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Button(action: close) { Label("一覧", systemImage: "chevron.left") }
-                    .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
+                    .buttonStyle(.borderless)
                 Spacer()
                 if model.loading || !model.saving.isEmpty { ProgressView().controlSize(.small) }
                 Button { model.openInNotion() } label: { Image(systemName: "arrow.up.right.square") }
@@ -467,7 +470,7 @@ struct NotionTaskDetailView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Button { model.toggleChecked(block) } label: {
                     Image(systemName: block.checked ? "checkmark.square.fill" : "square")
-                        .foregroundStyle(block.checked ? ScrimPalette.blue : Color.secondary).font(.system(size: body))
+                        .foregroundStyle(block.checked ? accent.ink : Color.secondary).font(.system(size: body))
                 }
                 .buttonStyle(.plain).disabled(model.saving.contains(block.id))
                 .accessibilityLabel(block.checked ? "チェック済み" : "未チェック")
@@ -558,7 +561,6 @@ struct NotionTaskDetailView: View {
             }
         }
         .padding(8).background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
-        .onExitCommand { model.cancelEdit() }
     }
 
     private var addBlockRow: some View {

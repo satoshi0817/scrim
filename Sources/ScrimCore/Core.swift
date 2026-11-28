@@ -246,6 +246,16 @@ public final class SettingsStore {
     public var notchLimitHours: Int { get { read("notchLimitHours", fallback: 3) } set { write(newValue, "notchLimitHours") } }
     public var notchOnlineOnly: Bool { get { read("notchOnlineOnly", fallback: false) } set { write(newValue, "notchOnlineOnly") } }
     public var appearanceMode: AppearanceMode { get { read("appearanceMode", fallback: .system) } set { write(newValue, "appearanceMode") } }
+    public var doubleEscapeToDismiss: Bool { get { read("doubleEscapeToDismiss", fallback: true) } set { write(newValue, "doubleEscapeToDismiss") } }
+    public static let defaultAccentRGB: UInt32 = 0x0081F3
+    public var accentRGB: UInt32 {
+        get { read("accentRGB", fallback: Self.defaultAccentRGB) & 0xFFFFFF }
+        set { write(newValue & 0xFFFFFF, "accentRGB") }
+    }
+    public var panelTheme: PanelThemeSettings {
+        get { read("panelTheme", fallback: PanelThemeSettings(legacyAccent: accentRGB)) }
+        set { write(newValue, "panelTheme") }
+    }
     public var agendaResetsScrollOnOpen: Bool { get { read("agendaResetsScrollOnOpen", fallback: true) } set { write(newValue, "agendaResetsScrollOnOpen") } }
     public var peekAllowsInteraction: Bool { get { read("peekAllowsInteraction", fallback: true) } set { write(newValue, "peekAllowsInteraction") } }
     public var noteTextSize: PanelTextSize { get { read("noteTextSize", fallback: .standard) } set { write(newValue, "noteTextSize") } }

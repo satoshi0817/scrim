@@ -202,7 +202,37 @@ func verifyDisplayLayoutModes() throws {
 }
 
 func verifyNativeSettings() throws {
-    let store = SettingsStore(storage: MemorySettingsStorage())
+    let storage = MemorySettingsStorage()
+    let store = SettingsStore(storage: storage)
+    let theme = ScrimTheme.shared
+    defer { theme.apply(PanelThemeSettings()) }
+    try check(store.accentRGB == SettingsStore.defaultAccentRGB, "Existing settings must default to Scrim blue")
+    store.accentRGB = 0xAB43D5
+    let restored = SettingsStore(storage: storage)
+    var colors = restored.panelTheme
+    try check(colors[.neutral].light.highlight == 0xAB43D5 && colors[.neutral].dark.highlight == 0xAB43D5,
+              "The previous accent must become the initial highlight in both appearances")
+    colors[.warm].light.background = 0x123456
+    colors[.warm].dark.highlight = 0x345678
+    colors.preset = .cool
+    store.panelTheme = colors
+    try check(restored.panelTheme == colors && restored.panelTheme[.warm] != PanelThemePreset.warm.colors,
+              "Settings must remember each preset's edits when another preset is selected")
+    theme.apply(restored.panelTheme)
+    try check(theme.settings.preset == .cool, "The persisted theme must apply")
+    for background: UInt32 in [0x000000, 0xFFFFFF, 0xA753D5] {
+        for highlight: UInt32 in [0x000000, 0xFFFFFF, 0xD7A10B] {
+            for dark in [false, true] {
+                let accent = ScrimAccent(colors: .init(background: background, highlight: highlight), dark: dark)
+                let surface = ScrimAccent.luminance(accent.nativeBackground)
+                let ink = ScrimAccent.luminance(accent.nativeInk)
+                try check(ScrimAccent.contrast(ink, surface) >= 4.5 && (dark ? surface <= 0.10 : surface >= 0.68),
+                          "Custom backgrounds and highlights must stay readable in each appearance")
+                try check(ScrimAccent.contrast(ScrimAccent.luminance(accent.nativeButton), 1) >= 4.5,
+                          "Custom button fills must keep white labels readable")
+            }
+        }
+    }
     let login = FakeLoginItemService()
     let controller = SettingsController(store: store, permissionState: { true }, loginService: login)
     var dockChanges = 0, layoutChanges = 0, gestureChanges = 0
@@ -1110,11 +1140,33 @@ func verifyPanelBehavior() throws {
     var openedSettings = false
     controller.onOpenSettings = { openedSettings = true; controller.presentSettings(dialogSettings) }
     let toolbar = try controller.root.subviews.compactMap { $0 as? OverlayControls }.first.unwrap("Missing overlay controls")
-    func sendKey(_ code: UInt16, _ characters: String, modifiers: NSEvent.ModifierFlags = []) {
-        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: controller.panel.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
+    func sendKey(_ code: UInt16, _ characters: String, modifiers: NSEvent.ModifierFlags = [], at timestamp: TimeInterval = 0, repeated: Bool = false) {
+        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: timestamp, windowNumber: controller.panel.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: repeated, keyCode: code)!
         NSApp.sendEvent(event)
     }
     func sendCommandComma() { sendKey(43, ",", modifiers: .command) }
+    do {
+        var dismissals = 0
+        controller.onDismiss = { dismissals += 1 }
+        defer { controller.onDismiss = nil }
+        controller.panel.makeFirstResponder(web)
+        _ = try javascript("window.escapeCount=0;window.addEventListener('keydown',e=>{if(e.key==='Escape')window.escapeCount++})", in: web)
+        sendKey(53, "\u{1b}", at: 1)
+        try waitFor("first Escape reaches WebKit") { (try? javascript("window.escapeCount", in: web) as? Int) == 1 }
+        sendKey(53, "\u{1b}", at: 1.1, repeated: true)
+        try check(dismissals == 0, "Holding Escape must not dismiss the overlay")
+        sendKey(53, "\u{1b}", at: 1.2)
+        try check(dismissals == 1, "Two separate Escape presses must dismiss the overlay")
+        sendKey(53, "\u{1b}", at: 2)
+        sendKey(53, "\u{1b}", at: 2.8)
+        sendKey(14, "e", at: 2.9)
+        sendKey(53, "\u{1b}", at: 3)
+        try check(dismissals == 1, "A pause or intervening key must break an Escape sequence")
+        store.doubleEscapeToDismiss = false
+        sendKey(53, "\u{1b}", at: 4)
+        try check(dismissals == 2, "The setting must restore single-press dismissal")
+        store.doubleEscapeToDismiss = true
+    }
     try check(toolbar.isHidden, "Pinned HUD must start hidden")
     sendCommandComma()
     try check(controller.showingActions && toolbar.isHidden, "Command-comma must open the centered action list")

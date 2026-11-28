@@ -30,6 +30,7 @@ final class ActionSelection: ObservableObject {
 }
 
 struct OverlayActionList: View {
+    @Environment(\.scrimAccent) private var accent
     @ObservedObject var selection: ActionSelection
     let editing: Bool
     let perform: (OverlayAction) -> Void
@@ -44,7 +45,7 @@ struct OverlayActionList: View {
                         if selection.selected == action { Image(systemName: "return") }
                     }.padding(10).contentShape(Rectangle())
                 }.buttonStyle(.plain)
-                .background(selection.selected == action ? ScrimPalette.blue.opacity(0.24) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                .background(selection.selected == action ? accent.ink.opacity(0.24) : .clear, in: RoundedRectangle(cornerRadius: 8))
             }
         }.padding(12).frame(maxWidth: .infinity).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
     }

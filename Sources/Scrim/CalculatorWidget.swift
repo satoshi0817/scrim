@@ -63,6 +63,7 @@ struct BasicCalculator {
 }
 
 struct CalculatorWidget: View {
+    @Environment(\.scrimAccent) private var accent
     @State private var calc = BasicCalculator()
     @FocusState private var focused: Bool
     private let keys = [["AC", "+/−", "%", "÷"], ["7","8","9","×"], ["4","5","6","−"], ["1","2","3","+"], ["0",".","="]]
@@ -71,7 +72,7 @@ struct CalculatorWidget: View {
             let gap: CGFloat = 5
             let w = max(1, (geometry.size.width - 3 * gap) / 4)
             VStack(spacing: gap) {
-                Text(calc.display).font(.system(size: min(48, max(20,geometry.size.height * 0.18)), weight: .light))
+                Text(calc.display).font(ScrimType.reading(min(48, max(20, geometry.size.height * 0.18))))
                     .lineLimit(1).minimumScaleFactor(0.45).frame(maxWidth: .infinity, alignment: .trailing)
                     .accessibilityLabel("計算結果 " + calc.display)
                 ForEach(keys, id: \.self) { row in
@@ -80,9 +81,9 @@ struct CalculatorWidget: View {
                             let op = ["÷","×","−","+","="].contains(key)
                             Button { focused = true; calc.press(key) } label: {
                                 Text(key).font(.system(size: min(22, max(12,geometry.size.height * 0.09)), weight: .medium))
-                                    .foregroundStyle(op ? Color.black : .primary)
+                                    .foregroundStyle(op ? Color.white : .primary)
                                     .frame(width: key == "0" ? w*2+gap : w).frame(maxHeight: .infinity)
-                                    .background(op ? ScrimPalette.amber : Color.primary.opacity(row == keys[0] ? 0.21 : 0.11), in: Capsule())
+                                    .background(op ? accent.button : Color.primary.opacity(row == keys[0] ? 0.21 : 0.11), in: Capsule())
                                     .contentShape(Capsule())
                             }.buttonStyle(.plain)
                         }

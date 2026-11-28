@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PanelGallery: View {
+    @Environment(\.scrimAccent) private var accent
     let choose: (Int) -> Void
     let drag: (Int, Bool) -> Void
     let close: () -> Void
@@ -9,29 +10,30 @@ struct PanelGallery: View {
         let title: String
         let description: String
         let symbol: String
-        let color: Color
-        init(_ id: Int, _ title: String, _ description: String, _ symbol: String, _ color: Color) {
+        let color: Color?
+        init(_ id: Int, _ title: String, _ description: String, _ symbol: String, _ color: Color? = nil) {
             self.id = id; self.title = title; self.description = description; self.symbol = symbol; self.color = color
         }
     }
     private let widgets = [
         Entry(15,"電卓","四則演算・符号変更・パーセント","plus.forwardslash.minus",ScrimPalette.amber),
         Entry(13,"次の予定","予定一覧と開始までの残り時間","calendar.badge.clock",ScrimPalette.red),
-        Entry(16,"Notionタスク","未完了タスクの一覧・追加・完了","checklist",ScrimPalette.blue),
-        Entry(10,"東京の天気","気温と3時間ごとの予報","cloud.sun.fill",ScrimPalette.blue),
-        Entry(11,"時計","アナログまたはデジタルの時計","clock.fill",ScrimPalette.button),
-        Entry(14,"世界時計","都市ごとの時刻と勤務時間","globe",ScrimPalette.button),
+        Entry(16,"Notionタスク","未完了タスクの一覧・追加・完了","checklist"),
+        Entry(10,"東京の天気","気温と3時間ごとの予報","cloud.sun.fill"),
+        Entry(11,"時計","アナログまたはデジタルの時計","clock.fill"),
+        Entry(14,"世界時計","都市ごとの時刻と勤務時間","globe"),
         Entry(12,"月間カレンダー","今月の日付と曜日をひと目で確認","calendar",ScrimPalette.red)
     ]
     private let content = [
-        Entry(0,"ウェブページ","URLを指定してサイトを表示","safari.fill",ScrimPalette.blue),
+        Entry(0,"ウェブページ","URLを指定してサイトを表示","safari.fill"),
         Entry(5,"Notionビュー","データベースのビューを表示","tablecells.fill",.secondary),
         Entry(1,"テキスト","箇条書きや番号付きのメモを書く","text.alignleft",ScrimPalette.amber),
-        Entry(2,"HTML","入力したHTMLをページとして表示","chevron.left.forwardslash.chevron.right",ScrimPalette.button),
-        Entry(3,"ファイル","PDF・テキスト・HTMLを開く","doc.fill",ScrimPalette.blue),
+        Entry(2,"HTML","入力したHTMLをページとして表示","chevron.left.forwardslash.chevron.right"),
+        Entry(3,"ファイル","PDF・テキスト・HTMLを開く","doc.fill"),
         Entry(4,"HTMLを取り込む","画像やCSSを含むページを保存","folder.fill",ScrimPalette.amber)
     ]
     @ViewBuilder private func artwork(_ entry: Entry) -> some View {
+        let color = entry.color ?? accent.ink
         switch entry.id {
         case 15:
             VStack(alignment: .trailing, spacing: 3) {
@@ -53,14 +55,14 @@ struct PanelGallery: View {
                 ForEach(["10:00   チーム定例", "13:30   デザインレビュー"], id: \.self) { title in
                     Text(title).font(.system(size: 12, weight: .medium)).padding(7)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(entry.color.opacity(0.13), in: RoundedRectangle(cornerRadius: 6))
+                        .background(color.opacity(0.13), in: RoundedRectangle(cornerRadius: 6))
                 }
             }.frame(maxWidth: 184)
         case 16:
             VStack(alignment: .leading, spacing: 7) {
                 ForEach([("checkmark.circle.fill", "資料を共有"), ("circle", "見積もりを確認"), ("circle", "週次レポート")], id: \.1) { symbol, title in
                     HStack(spacing: 7) {
-                        Image(systemName: symbol).foregroundStyle(symbol == "circle" ? Color.secondary : entry.color)
+                        Image(systemName: symbol).foregroundStyle(symbol == "circle" ? Color.secondary : accent.ink)
                         Text(title).font(.system(size: 12, weight: .medium)).strikethrough(symbol != "circle")
                     }
                 }
@@ -91,31 +93,31 @@ struct PanelGallery: View {
                     let parts = sample.components(separatedBy: "|")
                     VStack(spacing: 5) {
                         Text(parts[0]).font(.caption)
-                        Text(parts[1]).font(.system(size: 23, weight: .medium, design: .rounded)).monospacedDigit()
+                        Text(parts[1]).font(.system(size: 23, weight: .medium)).monospacedDigit()
                     }
                 }
             }
         case 12:
             VStack(alignment: .leading, spacing: 5) {
-                Text("11月").font(.headline).foregroundStyle(entry.color)
+                Text("11月").font(.headline).foregroundStyle(color)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 7), spacing: 2) {
                     ForEach(1...21, id: \.self) { day in
                         Text(String(day)).font(.system(size: 10)).frame(width: 17, height: 17)
                             .foregroundStyle(day == 20 ? Color.white : .primary)
-                            .background(day == 20 ? entry.color : .clear, in: Circle())
+                            .background(day == 20 ? color : .clear, in: Circle())
                     }
                 }
             }.frame(width: 148)
         default:
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Image(systemName: entry.symbol).foregroundStyle(entry.color)
+                    Image(systemName: entry.symbol).foregroundStyle(color)
                     Text([0:"example.com", 5:"プロジェクト", 1:"打ち合わせメモ", 2:"index.html", 3:"資料.pdf", 4:"website/"][entry.id] ?? "")
                         .font(.system(size: 12, weight: .semibold))
                 }
                 Divider()
                 switch entry.id {
-                case 0: RoundedRectangle(cornerRadius: 4).fill(ScrimPalette.blue.gradient).frame(height: 17)
+                case 0: RoundedRectangle(cornerRadius: 4).fill(accent.ink.gradient).frame(height: 17)
                 case 5: Text("タスク名　　　　　担当").font(.caption.bold())
                 case 1: Text("・ 来週の予定を確認").font(.caption)
                 case 2: Text("<main>Hello</main>").font(.system(size: 11, design: .monospaced))
@@ -149,7 +151,7 @@ struct PanelGallery: View {
                         VStack(alignment: .leading, spacing: 5) {
                             artwork(entry)
                                 .frame(maxWidth: .infinity).frame(height: 120)
-                                .background(entry.id == 10 ? ScrimPalette.button : entry.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                                .background(entry.id == 10 ? accent.button : (entry.color ?? accent.ink).opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                                 .accessibilityHidden(true)
                             Text(entry.title).font(.headline)
                             Text(entry.description).font(.callout).foregroundStyle(.secondary)

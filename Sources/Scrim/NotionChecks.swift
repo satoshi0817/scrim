@@ -39,7 +39,7 @@ private func fixtureBlocks(_ base: URL) throws -> [String: [String: Any]] { try 
         } else {
             view = AnyView(NotionTasksView(model: model, now: Date(), size: size, editing: editing))
         }
-        let content = view.tint(ScrimPalette.blue).frame(width: size.width, height: size.height)
+        let content = view.scrimTint().frame(width: size.width, height: size.height)
             .background(Color(nsColor: .windowBackgroundColor))
         let host = NSHostingView(rootView: content)
         host.frame = CGRect(origin: .zero, size: size); host.appearance = appearance
@@ -103,6 +103,27 @@ private func resetFixture(_ base: URL) throws {
         let widget = try XCTUnwrapCheck(panel.subviews.compactMap { $0 as? NativeWidgetPanel }.first, "native task widget")
         try waitFor("restored Notion task panel") { widget.model.notion.tasks.count == 3 }
         try check(widget.model.notion.mapping == saved, "The saved panel must restore its Notion database mapping")
+        var dismissals = 0
+        controller.onDismiss = { dismissals += 1 }
+        controller.panel.makeFirstResponder(widget)
+        let notion = widget.model.notion
+        notion.openDetail(notion.tasks[0])
+        let detail = try XCTUnwrapCheck(notion.detail, "task detail")
+        detail.beginTitleEdit()
+        func escape(at timestamp: TimeInterval) throws {
+            let event = try XCTUnwrapCheck(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                                           timestamp: timestamp, windowNumber: controller.panel.windowNumber,
+                                                           context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+                                                           isARepeat: false, keyCode: 53), "Escape event")
+            NSApp.sendEvent(event)
+        }
+        try escape(at: 1)
+        try check(notion.detail === detail && !detail.editingTitle, "Escape must cancel a task title edit before leaving the detail")
+        try escape(at: 1.1)
+        try check(notion.detail == nil && dismissals == 0, "Escape must return from task detail without hiding Scrim")
+        try escape(at: 1.2)
+        try check(dismissals == 0, "Leaving a detail must not count as the first Escape of overlay dismissal")
+        controller.onDismiss = nil
         controller.setEditing(true)
         let hint = try XCTUnwrapCheck(panel.subviews.compactMap { $0 as? PanelEditHint }.first, "task panel menu control")
         try check(hint.accessibilityPerformPress(), "The task panel menu must open from edit mode")

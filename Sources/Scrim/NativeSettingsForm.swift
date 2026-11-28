@@ -105,8 +105,12 @@ struct NativeSettingsForm: View {
                 }.pickerStyle(.segmented)
                 Toggle("Dock に表示", isOn: Binding(get: { store.dockVisible }, set: controller.setDockVisible))
                 LabeledContent("アクション一覧", value: "⌘,")
+                Toggle("Esc を2回押して Scrim を閉じる", isOn: Binding(get: { store.doubleEscapeToDismiss }, set: controller.setDoubleEscapeToDismiss))
             } header: { Text("表示") } footer: {
                 Text("Scrimの固定表示中に ⌘ とカンマで一覧を開き、↑↓で選んでReturnで実行します。")
+            }
+            Section("パネルの配色") {
+                PanelThemeSettingsView(store: store)
             }
             Section {
                 Toggle("画面共有・スクリーンショットから除外", isOn: Binding(get: { store.hideFromScreenCapture }, set: controller.setCaptureExclusion))

@@ -67,7 +67,7 @@ final class EditablePageDot: NSButton, NSDraggingSource {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard let source = sender.draggingSource as? EditablePageDot, source !== self, source.superview === superview else { return [] }
         layer?.borderWidth = 2
-        layer?.borderColor = ScrimPalette.nativeBlue.cgColor
+        layer?.borderColor = ScrimTheme.shared.accent.nativeInk.cgColor
         return .move
     }
     override func draggingExited(_ sender: NSDraggingInfo?) { layer?.borderWidth = 0 }
